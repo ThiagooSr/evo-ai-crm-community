@@ -1,5 +1,7 @@
 class CreateContactCompanies < ActiveRecord::Migration[7.1]
   def change
+    return if table_exists?(:contact_companies)
+    
     create_table :contact_companies, id: :uuid do |t|
       t.uuid :contact_id, null: false
       t.uuid :company_id, null: false

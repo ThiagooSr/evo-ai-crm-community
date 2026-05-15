@@ -1,5 +1,7 @@
 class AddCompanyFieldsToContacts < ActiveRecord::Migration[7.1]
   def change
+    return if column_exists?(:contacts, :tax_id)
+    
     add_column :contacts, :tax_id, :string, limit: 14
     add_column :contacts, :website, :string
     add_column :contacts, :industry, :string
