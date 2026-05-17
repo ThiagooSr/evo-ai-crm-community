@@ -314,14 +314,19 @@ class Whatsapp::Providers::EvolutionService < Whatsapp::Providers::BaseService
   end
 
   def send_button_message(clean_number, message, items)
+    # Formato Evolution API /message/sendButtons: { type, displayText, id }
+    # WhatsApp reply button displayText limit: 20 caracteres
     buttons = items.map do |item|
-      { type: 'reply', reply: { id: item['value'].to_s, title: item['title'].to_s.truncate(20) } }
+      { type: 'reply', displayText: item['title'].to_s.truncate(20), id: item['value'].to_s }
     end
+
+    content = html_to_whatsapp(message.content.to_s)
 
     body = {
       number: clean_number,
-      title: '',
-      description: html_to_whatsapp(message.content.to_s),
+      title: content.truncate(60),
+      description: content,
+      footer: 'Evo CRM',
       buttons: buttons
     }
 
@@ -337,17 +342,21 @@ class Whatsapp::Providers::EvolutionService < Whatsapp::Providers::BaseService
   end
 
   def send_list_message(clean_number, message, items)
+    # Formato Evolution API /message/sendList: { rowId, title, description }
+    # WhatsApp list row title limit: 24 caracteres
     rows = items.map do |item|
-      { id: item['value'].to_s, title: item['title'].to_s.truncate(24), description: '' }
+      { rowId: item['value'].to_s, title: item['title'].to_s.truncate(24), description: '' }
     end
+
+    content = html_to_whatsapp(message.content.to_s)
 
     body = {
       number: clean_number,
-      title: '',
-      description: html_to_whatsapp(message.content.to_s),
-      buttonText: 'Menu',
-      footerText: '',
-      sections: [{ title: 'Options', rows: rows }]
+      title: content.truncate(60),
+      description: content,
+      buttonText: I18n.t('whatsapp.interactive.list_button', default: 'Menu'),
+      footerText: 'Evo CRM',
+      sections: [{ title: I18n.t('whatsapp.interactive.list_section', default: 'Options'), rows: rows }]
     }
 
     Rails.logger.info "[Evolution] Sending list message to #{clean_number} with #{rows.length} rows"
@@ -378,7 +387,11 @@ class Whatsapp::Providers::EvolutionService < Whatsapp::Providers::BaseService
 
   def send_attachment_message(phone_number, message)
     attachment = message.attachments.first
-    return unless attachment
+
+    unless attachment
+      Rails.logger.error "[Evolution] No attachment found for message #{message.id}"
+      return false
+    end
 
     case attachment.file_type
     when 'image'
@@ -463,13 +476,27 @@ class Whatsapp::Providers::EvolutionService < Whatsapp::Providers::BaseService
   def generate_direct_s3_url(attachment)
     return attachment.file_url unless attachment.file.attached?
 
-    # Always return the signed URL — see the matching method in
-    # evolution_go_service.rb for the full rationale. Stripping the AWS
-    # signing parameters only works on public buckets; on Cloudflare R2,
-    # private S3 buckets and MinIO, the upstream provider gets a `text/xml`
-    # error body back and rejects the upload.
-    signed_url = attachment.download_url
-    Rails.logger.info "[Evolution S3] Using signed URL (works for both public and private buckets)"
+    # Always use a signed URL — never the bare object URL.
+    # Private buckets (Cloudflare R2, S3 restricted ACLs, MinIO) return an XML
+    # error to unauthenticated GETs; Evolution API then rejects with a MIME-type
+    # error. TTL is 15 minutes (instead of the Rails default of 5 minutes) so
+    # slow providers have enough time to fetch large video/PDF files.
+    #
+    # ACTIVE_STORAGE_URL overrides the host used in DiskService signed URLs so
+    # that external containers (Evolution API, Evolution Go) can actually reach
+    # the file. Without it, localhost:3000 resolves to the caller's container,
+    # not the CRM Rails app.
+    url_options = Rails.application.routes.default_url_options.dup
+    if ENV['ACTIVE_STORAGE_URL'].present?
+      storage_uri = URI.parse(ENV['ACTIVE_STORAGE_URL'])
+      url_options[:host] = storage_uri.host
+      url_options[:port] = storage_uri.port
+      url_options[:protocol] = storage_uri.scheme
+    end
+    ActiveStorage::Current.url_options = url_options if ActiveStorage::Current.url_options.blank?
+    signed_url = attachment.file.blob.url(expires_in: 15.minutes)
+
+    Rails.logger.info "[Evolution S3] Using signed URL with 15-minute TTL (host: #{url_options[:host]})"
     signed_url
   end
 

@@ -215,6 +215,15 @@ group :test do
   gem 'test-prof'
 end
 
+# CI-only group: loads the neutral extension consumer stub fixture under
+# spec/support/extension_consumer_stub/ when
+# BUNDLE_WITH=extension_consumer_stub. Used by
+# .github/workflows/community-with-extension-consumer-stub.yml to verify
+# that the EvoExtensionPoints contract has not regressed.
+group :extension_consumer_stub do
+  gem 'extension_consumer_stub', path: 'spec/support/extension_consumer_stub'
+end
+
 group :development, :test do
   gem 'active_record_query_trace'
   ##--- gems for debugging and error reporting ---##

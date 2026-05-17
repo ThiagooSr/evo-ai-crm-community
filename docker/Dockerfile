@@ -57,6 +57,10 @@ ENV PATH="$PNPM_HOME:$PATH"
 WORKDIR /app
 
 COPY Gemfile Gemfile.lock ./
+# CI-only path-gem referenced by Gemfile.lock. Must be present at bundle install
+# time even when the :extension_consumer_stub group is excluded — Bundler still
+# resolves the lockfile entry and fails on missing path. See EVO-1378.
+COPY spec/support/extension_consumer_stub spec/support/extension_consumer_stub
 
 # adding xz as nokogiri was failing to build libxml
 # https://github.com/evolution/evolution/issues/4045
@@ -65,7 +69,7 @@ RUN bundle config set --local force_ruby_platform true
 
 # Do not install development or test gems in production
 RUN if [ "$RAILS_ENV" = "production" ]; then \
-  bundle config set without 'development test'; bundle install -j 4 -r 3; \
+  bundle config set without 'development test extension_consumer_stub'; bundle install -j 4 -r 3; \
   else bundle install -j 4 -r 3; \
   fi
 
@@ -79,8 +83,13 @@ COPY . /app
 RUN mkdir -p /app/log
 
 # clean up non-production files
+# Preserve spec/support/extension_consumer_stub/ because Gemfile.lock references
+# that path (CI-only :extension_consumer_stub group, EVO-1378). Bundler validates
+# the path at runtime startup even when the group is excluded via BUNDLE_WITHOUT.
 RUN if [ "$RAILS_ENV" = "production" ]; then \
-  rm -rf spec node_modules tmp/cache; \
+  find spec -mindepth 1 -maxdepth 1 ! -name support -exec rm -rf {} + && \
+  find spec/support -mindepth 1 -maxdepth 1 ! -name extension_consumer_stub -exec rm -rf {} + && \
+  rm -rf node_modules tmp/cache; \
   fi
 
 # Write git SHA to file (passed as build arg, falls back to "unknown")
