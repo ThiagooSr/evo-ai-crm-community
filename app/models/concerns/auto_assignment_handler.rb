@@ -10,8 +10,8 @@ module AutoAssignmentHandler
 
   def run_auto_assignment
     # Round robin kicks in on conversation create & update
-    # run it only when conversation status changes to open
-    return unless conversation_status_changed_to_open?
+    # run it only when conversation status changes to open or pending
+    return unless conversation_status_changed_to_open? || conversation_status_changed_to_pending?
     return unless should_run_auto_assignment?
 
     ::AutoAssignment::AgentAssignmentService.new(conversation: self, allowed_agent_ids: inbox.member_ids_with_assignment_capacity).perform

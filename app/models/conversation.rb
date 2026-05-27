@@ -334,6 +334,13 @@ class Conversation < ApplicationRecord
     true if previous_changes.key?(:id) || saved_change_to_status?
   end
 
+  def conversation_status_changed_to_pending?
+    return false unless pending?
+
+    # saved_change_to_status? method only works in case of update
+    true if previous_changes.key?(:id) || saved_change_to_status?
+  end
+
   def create_label_change(user_name)
     return unless user_name
 
