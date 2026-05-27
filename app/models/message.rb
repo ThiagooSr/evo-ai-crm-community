@@ -405,11 +405,18 @@ class Message < ApplicationRecord
     # mark resolved bot conversation as pending to be reopened by bot processor service
     if conversation.inbox.active_bot?
       conversation.pending!
-    elsif conversation.inbox.api?
-      Current.executed_by = sender if reopened_by_contact?
-      conversation.open!
     else
-      conversation.open!
+      if conversation.inbox.api?
+        Current.executed_by = sender if reopened_by_contact?
+      end
+
+      status_to_set = conversation.inbox.default_conversation_status_value
+      Rails.logger.info "[Message] reopen_resolved_conversation - conversation_id: #{conversation.id}, inbox_default: #{status_to_set}"
+      if status_to_set == :pending
+        conversation.pending!
+      else
+        conversation.open!
+      end
     end
   end
 
