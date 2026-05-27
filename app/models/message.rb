@@ -390,11 +390,11 @@ class Message < ApplicationRecord
       has_active_bot = conversation.inbox.active_bot?
       Rails.logger.info "[Message] reopen_conversation - conversation.pending?: true, inbox.active_bot?: #{has_active_bot}, inbox_id: #{conversation.inbox_id}"
 
-      unless has_active_bot
-        Rails.logger.info "[Message] reopen_conversation - Changing conversation #{conversation.id} from pending to open (no active bot)"
+      unless has_active_bot || conversation.inbox.default_conversation_status == 'pending'
+        Rails.logger.info "[Message] reopen_conversation - Changing conversation #{conversation.id} from pending to open (no active bot and default status is not pending)"
         conversation.open!
       else
-        Rails.logger.info "[Message] reopen_conversation - Keeping conversation #{conversation.id} as pending (active bot present)"
+        Rails.logger.info "[Message] reopen_conversation - Keeping conversation #{conversation.id} as pending (active bot or default pending status present)"
       end
     end
 
