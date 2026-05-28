@@ -404,7 +404,7 @@ class Api::V1::ContactsController < Api::V1::BaseController
                                    .preload(:labels, :companies, :contact_companies, :company_contacts)
 
     # Also preload pipeline items directly associated with contacts (only for the current page subset)
-    contact_ids = contacts_with_associations.pluck(:id)
+    contact_ids = contacts_with_associations.map(&:id)
     PipelineItem.where(contact_id: contact_ids).includes(:pipeline, :pipeline_stage).load
 
     return contacts_with_associations.includes([{ contact_inboxes: [:inbox] }]) if @include_contact_inboxes
