@@ -336,6 +336,10 @@ class Api::V1::ContactsController < Api::V1::BaseController
 
   private
 
+  def apply_pagination
+    # no-op: paginação já é aplicada dentro de fetch_contacts para evitar carregamento completo
+  end
+
   # Cache key for contacts count, varies by query parameters that affect listable contacts
   def cache_key_for_contacts_count
     # Build a deterministic string based on filters that influence the count
