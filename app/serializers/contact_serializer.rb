@@ -23,7 +23,7 @@ module ContactSerializer
   #
   # @return [Hash] Serialized contact ready for Oj
   #
-  def serialize(contact, include_contact_inboxes: false, include_labels: true, include_companies: false, include_pipelines: false)
+  def serialize(contact, include_contact_inboxes: false, include_labels: true, include_companies: false, include_pipelines: false, labels_cache: nil)
     result = contact.as_json(
       only: [:id, :name, :type, :email, :phone_number, :identifier, :blocked,
              :availability_status, :tax_id, :website, :industry],
@@ -41,8 +41,13 @@ module ContactSerializer
     # Conditionally include labels
     if include_labels
       result['labels'] = contact.labels.map do |tag|
-        label = Label.find_by(title: tag.name)
-        { name: tag.name, color: label&.color || '#1f93ff' }
+        color = nil
+        if labels_cache
+          color = labels_cache[tag.name] || (tag.name ? labels_cache[tag.name.downcase] : nil)
+        else
+          color = Label.find_by(title: tag.name)&.color
+        end
+        { name: tag.name, color: color || '#1f93ff' }
       end
     end
 
@@ -107,7 +112,17 @@ module ContactSerializer
   def serialize_collection(contacts, **options)
     return [] unless contacts
 
-    contacts.map { |contact| serialize(contact, **options) }
+    # Cache all labels once to avoid N+1 queries in the loop
+    labels_cache = {}
+    if options.fetch(:include_labels, true)
+      Label.pluck(:title, :color).each do |title, color|
+        next unless title
+        labels_cache[title] = color
+        labels_cache[title.downcase] = color
+      end
+    end
+
+    contacts.map { |contact| serialize(contact, labels_cache: labels_cache, **options) }
   end
 
   private

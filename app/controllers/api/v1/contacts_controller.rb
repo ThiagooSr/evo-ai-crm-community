@@ -383,16 +383,24 @@ class Api::V1::ContactsController < Api::V1::BaseController
   end
 
   def fetch_contacts(contacts)
-    # Eager load conversations and pipeline items to avoid N+1 queries
+    # Padrão: obter os parâmetros de paginação e aplicar logo no início,
+    # evitando que carreguemos e instanciemos toda a base de contatos em memória
+    page = params[:page]&.to_i || 1
+    page_size = params[:pageSize]&.to_i || params[:page_size]&.to_i || params[:per_page]&.to_i || 20
+    page_size = [page_size.to_i, 1].max
+
+    # Eager load associations on the paginated subset to avoid N+1 queries
     contacts_with_associations = filtrate(contacts)
+                                   .page(page)
+                                   .per(page_size)
                                    .includes([
                                                { avatar_attachment: [:blob] },
                                                { conversations: { pipeline_items: [:pipeline, :pipeline_stage] } }
                                              ])
                                    .preload(:labels, :companies, :contact_companies, :company_contacts)
 
-    # Also preload pipeline items directly associated with contacts
-    contact_ids = contacts_with_associations.map(&:id)
+    # Also preload pipeline items directly associated with contacts (only for the current page subset)
+    contact_ids = contacts_with_associations.pluck(:id)
     PipelineItem.where(contact_id: contact_ids).includes(:pipeline, :pipeline_stage).load
 
     return contacts_with_associations.includes([{ contact_inboxes: [:inbox] }]) if @include_contact_inboxes
