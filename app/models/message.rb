@@ -253,6 +253,11 @@ class Message < ApplicationRecord
       ]
     )
     # rubocop:enable Rails/SkipsModelValidations
+
+    # Update in-memory association so that pushed/serialized event data gets the fresh timestamp
+    new_activity_at = conversation.last_activity_at.nil? ? candidate_time : [conversation.last_activity_at, candidate_time].max
+    conversation.last_activity_at = new_activity_at
+    conversation.updated_at = Time.current
   end
 
   private
