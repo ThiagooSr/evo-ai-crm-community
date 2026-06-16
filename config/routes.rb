@@ -94,11 +94,11 @@ Rails.application.routes.draw do
         post :disconnect_channel_provider, on: :member
         post :sync_whatsapp_subscription, on: :member
         delete :avatar, on: :member
-        get :message_templates, on: :member
-        post :message_templates, on: :member
+        # Template CRUD moved to the dedicated flat /api/v1/message_templates
+        # endpoint (EVO-1716). Only the per-channel Meta sync stays inbox-scoped.
         post 'message_templates/sync', action: :sync_message_templates, on: :member
-        put 'message_templates/:template_id', action: :update_message_template, on: :member
-        delete 'message_templates/:template_id', action: :delete_message_template, on: :member
+        post 'message_templates/:template_id/sync_with_whatsapp_cloud',
+             action: :sync_template_with_whatsapp_cloud, on: :member
       end
 
       resources :conversations, only: [:index, :create, :show, :update, :destroy], controller: 'conversations' do
@@ -108,6 +108,7 @@ Rails.application.routes.draw do
           get :search
           post :filter
           get :available_for_pipeline
+          get :unread_count
         end
         resources :messages, only: [:index, :create, :destroy, :update], controller: 'conversations/messages' do
           member do
@@ -123,6 +124,7 @@ Rails.application.routes.draw do
           post :mute
           post :unmute
           post :transcript
+          post :email_team
           post :toggle_status
           post :toggle_priority
           post :toggle_typing_status
@@ -153,7 +155,11 @@ Rails.application.routes.draw do
         delete :avatar, on: :member
       end
 
-      resources :canned_responses, only: [:index, :create, :update, :destroy], controller: 'canned_responses'
+      resources :canned_responses, only: [:index, :show, :create, :update, :destroy], controller: 'canned_responses'
+
+      # Dedicated, account-scoped message templates CRUD (global + channel-bound).
+      # Channel-bound ops pass inbox_id; Meta sync stays on the inbox routes. (EVO-1716)
+      resources :message_templates, only: [:index, :show, :create, :update, :destroy], controller: 'message_templates'
 
       resources :facebook_comment_moderations, only: [:index, :show], controller: 'facebook_comment_moderations' do
         member do
@@ -221,6 +227,16 @@ Rails.application.routes.draw do
 
       scope module: 'evo_flow' do
         resources :contact_events, only: [:index], path: 'contacts/:contact_id/events', param: :contact_id
+        resources :segments, only: %i[index show create update destroy] do
+          member do
+            post :recompute
+            get :contact_ids, path: 'contact-ids'
+          end
+          collection do
+            post :preview
+            post :recompute_all, path: 'recompute-all'
+          end
+        end
       end
 
       resources :csat_survey_responses, only: [:index], controller: 'csat_survey_responses' do
@@ -521,6 +537,8 @@ Rails.application.routes.draw do
         end
       end
 
+      post 'pipeline_tasks/for_conversation', to: 'pipeline_tasks#for_conversation'
+
       resources :pipelines, controller: 'pipelines' do
         collection do
           get :stats
@@ -550,6 +568,7 @@ Rails.application.routes.draw do
           end
           collection do
             patch :bulk_move
+            patch :move_conversation
             get :stats
             get :available_conversations
             get :available_contacts
@@ -679,6 +698,9 @@ Rails.application.routes.draw do
                 end
 
                 resources :messages, only: [:index, :create, :update]
+                # Dedicated outbound send: creates an :outgoing message, optionally
+                # rendered from a MessageTemplate (EVO-1235 [6.6]).
+                resources :outbound_messages, only: [:create]
               end
             end
           end
@@ -699,6 +721,7 @@ Rails.application.routes.draw do
   post 'webhooks/telegram/:bot_token', to: 'webhooks/telegram#process_payload'
   post 'webhooks/sms/:phone_number', to: 'webhooks/sms#process_payload'
   post 'webhooks/gmail/pubsub', to: 'webhooks/gmail#pubsub'
+  post 'webhooks/sendgrid', to: 'webhooks/sendgrid#create'
   get 'webhooks/whatsapp', to: 'webhooks/whatsapp#verify'
   post 'webhooks/whatsapp', to: 'webhooks/whatsapp#process_payload'
   get 'webhooks/whatsapp/:phone_number', to: 'webhooks/whatsapp#verify'
@@ -754,5 +777,4 @@ Rails.application.routes.draw do
   # extension point. No-op in the community release — the registry is empty
   # unless a consumer gem registers a plugin. See EXTENSION_POINTS.md §3.
   EvoExtensionPoints::PluginLoader.draw_routes(self)
-
 end

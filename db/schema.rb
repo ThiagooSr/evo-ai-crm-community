@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_05_20_192951) do
+ActiveRecord::Schema[7.1].define(version: 2026_06_11_130000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -265,6 +265,18 @@ ActiveRecord::Schema[7.1].define(version: 2026_05_20_192951) do
     t.index ["line_channel_id"], name: "index_channel_line_on_line_channel_id", unique: true
   end
 
+  create_table "channel_sendgrid", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.text "api_key_encrypted", null: false
+    t.string "from_email", null: false
+    t.string "from_name"
+    t.string "reply_to"
+    t.string "sender_domain"
+    t.string "webhook_registration_status", default: "pending", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["from_email"], name: "index_channel_sendgrid_on_from_email"
+  end
+
   create_table "channel_sms", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.string "phone_number", null: false
     t.string "provider", default: "default"
@@ -386,6 +398,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_05_20_192951) do
     t.string "tax_id", limit: 14
     t.string "website"
     t.string "industry"
+    t.boolean "email_suppressed", default: false, null: false
+    t.string "email_suppression_reason"
     t.index ["blocked"], name: "index_contacts_on_blocked"
     t.index ["email"], name: "uniq_email_per_account_contact", unique: true
     t.index ["id"], name: "idx_contacts_with_identity", where: "(((email)::text <> ''::text) OR ((phone_number)::text <> ''::text) OR ((identifier)::text <> ''::text))"
@@ -606,6 +620,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_05_20_192951) do
     t.string "business_name"
     t.string "display_name"
     t.string "default_conversation_status"
+    t.uuid "greeting_message_template_id"
+    t.uuid "out_of_office_message_template_id"
     t.index ["channel_id", "channel_type"], name: "index_inboxes_on_channel_id_and_channel_type"
     t.index ["default_conversation_status"], name: "index_inboxes_on_default_conversation_status"
   end
@@ -681,8 +697,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_05_20_192951) do
   end
 
   create_table "message_templates", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
-    t.string "channel_type", null: false
-    t.uuid "channel_id", null: false
+    t.string "channel_type"
+    t.uuid "channel_id"
     t.string "name", null: false
     t.text "content", null: false
     t.string "language", default: "pt_BR"
@@ -697,10 +713,13 @@ ActiveRecord::Schema[7.1].define(version: 2026_05_20_192951) do
     t.boolean "active", default: true
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "external_legacy_id"
     t.index ["category"], name: "idx_templates_by_category"
     t.index ["channel_type", "channel_id", "active"], name: "idx_templates_active_by_channel"
     t.index ["channel_type", "channel_id"], name: "index_message_templates_on_channel"
+    t.index ["external_legacy_id"], name: "idx_message_templates_external_legacy_id", unique: true, where: "(external_legacy_id IS NOT NULL)"
     t.index ["name", "channel_type", "channel_id"], name: "idx_templates_lookup"
+    t.index ["name"], name: "idx_message_templates_global_name", unique: true, where: "(channel_id IS NULL)"
     t.index ["name"], name: "idx_templates_by_name"
     t.index ["template_type"], name: "idx_templates_by_type"
   end
@@ -978,8 +997,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_05_20_192951) do
     t.index ["sku"], name: "index_products_on_sku", unique: true, where: "(sku IS NOT NULL)"
     t.index ["status"], name: "index_products_on_status"
     t.check_constraint "default_price >= 0::numeric", name: "products_default_price_non_negative"
-    t.check_constraint "kind::text = ANY (ARRAY['physical'::character varying, 'digital'::character varying]::text[])", name: "products_kind_check"
-    t.check_constraint "status::text = ANY (ARRAY['active'::character varying, 'inactive'::character varying, 'draft'::character varying]::text[])", name: "products_status_check"
+    t.check_constraint "kind::text = ANY (ARRAY['physical'::character varying::text, 'digital'::character varying::text])", name: "products_kind_check"
+    t.check_constraint "status::text = ANY (ARRAY['active'::character varying::text, 'inactive'::character varying::text, 'draft'::character varying::text])", name: "products_status_check"
     t.check_constraint "stock_quantity IS NULL OR stock_quantity >= 0", name: "products_stock_quantity_non_negative"
   end
 

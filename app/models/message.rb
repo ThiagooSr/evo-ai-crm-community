@@ -137,8 +137,37 @@ class Message < ApplicationRecord
     @token ||= inbox.channel.try(:page_access_token)
   end
 
+  # EVO-1551 round 6 — egress masking entrypoint.
+  # Use this — NEVER raw .content_attributes — anywhere the value crosses a
+  # server boundary (REST serializer, jbuilder, WS broadcast, outbound webhook,
+  # mailer). The Rubocop cop `Evo/NoRawContentAttributesInEgress` enforces this
+  # at CI; the regression net is spec/regression/pii_egress_invariant_spec.rb.
+  #
+  # `audience:` mirrors the two predicates in `ContactPiiMasker`:
+  #   :broadcast   — used by paths whose audience is the whole account
+  #                  (ActionCable broadcasts, outbound webhooks). Admin caller
+  #                  must NOT defeat masking because masked agents share the
+  #                  channel. Predicate: account_flag_enabled?.
+  #   :per_request — used by paths rendered in the HTTP pipeline where
+  #                  Current.user is set (REST serializers/jbuilders). Admin
+  #                  tier sees raw; agents/widget contacts see masked.
+  #                  Predicate: should_mask?.
+  def content_attributes_for_egress(audience: :broadcast)
+    masked =
+      case audience
+      when :broadcast then ContactPiiMasker.account_flag_enabled?
+      when :per_request then ContactPiiMasker.should_mask?
+      else raise ArgumentError, "unknown audience #{audience.inspect}"
+      end
+
+    return content_attributes unless masked
+
+    ContactPiiMasker.scrub_pii_content_attributes(content_attributes)
+  end
+
   def push_event_data
     data = attributes.symbolize_keys.merge(
+      content_attributes: content_attributes_for_egress,
       created_at: created_at.to_i,
       message_type: message_type_before_type_cast,
       conversation_id: conversation&.id&.to_s,
@@ -152,12 +181,18 @@ class Message < ApplicationRecord
   def conversation_push_event_data
     return {} unless conversation
 
+    # EVO-1551 round 3 / CB-6: message.created broadcasts to a mixed audience
+    # (inbox members + account_token), so mask source_id whenever the flag is
+    # on — `should_mask?` would let an admin caller leak the raw JID to every
+    # agent on the inbox.
+    source_id = conversation.contact_inbox&.source_id
+    masked_source_id = ContactPiiMasker.account_flag_enabled? ? ContactPiiMasker.mask_identifier(source_id) : source_id
     {
       id: conversation.id.to_s,
       assignee_id: conversation.assignee_id,
-      unread_count: conversation.unread_incoming_messages.count,
+      unread_count: conversation.unread_incoming_messages_count,
       last_activity_at: conversation.last_activity_at.to_i,
-      contact_inbox: conversation.contact_inbox.present? ? { source_id: conversation.contact_inbox.source_id } : {}
+      contact_inbox: conversation.contact_inbox.present? ? { source_id: masked_source_id } : {}
     }
   end
 
@@ -170,7 +205,7 @@ class Message < ApplicationRecord
   def webhook_data
     data = {
       additional_attributes: additional_attributes,
-      content_attributes: content_attributes,
+      content_attributes: content_attributes_for_egress,
       content_type: content_type,
       content: content,
       conversation: conversation.webhook_data,
@@ -442,7 +477,7 @@ class Message < ApplicationRecord
   end
 
   def email_notifiable_channel?
-    email_notifiable_webwidget? || %w[Email].include?(inbox.inbox_type) || email_notifiable_api_channel?
+    email_notifiable_webwidget? || %w[Email SendGrid].include?(inbox.inbox_type) || email_notifiable_api_channel?
   end
 
   def can_notify_via_mail?
@@ -460,6 +495,7 @@ class Message < ApplicationRecord
   end
 
   def trigger_notify_via_mail
+    return Sendgrid::SendEmailWorker.perform_in(1.second, id) if inbox.inbox_type == 'SendGrid'
     return EmailReplyWorker.perform_in(1.second, id) if inbox.inbox_type == 'Email'
 
     # will set a redis key for the conversation so that we don't need to send email for every new message

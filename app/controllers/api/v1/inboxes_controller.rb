@@ -5,6 +5,10 @@ module Api
       class InboxesController < Api::V1::BaseController
         include Api::V1::InboxesHelper
         include Api::V1::ResourceLimitsHelper
+
+        rescue_from Sendgrid::InvalidApiKeyError, with: :handle_sendgrid_invalid_key
+        rescue_from Sendgrid::ServiceUnavailableError, with: :handle_sendgrid_unavailable
+
         before_action :fetch_inbox, except: %i[index create]
         before_action :fetch_agent_bot, only: [:set_agent_bot]
         before_action :validate_limit, only: [:create]
@@ -24,10 +28,10 @@ module Api
           disconnect_channel_provider: 'inboxes.update',
           sync_whatsapp_subscription: 'inboxes.update',
           avatar: 'inboxes.update',
-          message_templates: 'inboxes.message_templates',
+          # Template CRUD moved to MessageTemplatesController (EVO-1716); only the
+          # per-channel Meta sync remains here, keeping its inbox permission.
           sync_message_templates: 'inboxes.message_templates',
-          update_message_template: 'inboxes.update_message_template',
-          delete_message_template: 'inboxes.delete_message_template',
+          sync_template_with_whatsapp_cloud: 'inboxes.message_templates',
           facebook_posts: 'inboxes.read'
         })
 
@@ -342,112 +346,6 @@ module Api
           )
         end
 
-        # Generic message templates (for all channel types)
-        def message_templates
-          authorize @inbox, :message_templates?
-
-          case request.method
-          when 'GET'
-            # List templates
-            begin
-              @templates = @inbox.channel&.message_templates&.active || MessageTemplate.none
-
-              @templates = @templates.by_category(params[:category]) if params[:category].present?
-              @templates = @templates.by_type(params[:template_type]) if params[:template_type].present?
-              @templates = @templates.search_by_name(params[:search]) if params[:search].present?
-
-              @templates = case params[:sort_by]
-                         when 'name'
-                           @templates.order(:name)
-                         else
-                           @templates.recently_created
-                         end
-
-              if params[:page]&.to_i == -1 || params[:per_page]&.to_i == -1
-                # Return all templates without pagination
-                success_response(
-                  data: @templates.map(&:serialized),
-                  meta: {
-                    total: @templates.count,
-                    page: 1,
-                    per_page: @templates.count,
-                    total_pages: 1
-                  },
-                  message: 'Inbox templates retrieved successfully'
-                )
-                return
-              end
-
-              apply_pagination
-
-              paginated_response(
-                data: @templates.map(&:serialized),
-                collection: @templates,
-                message: 'Inbox templates retrieved successfully'
-              )
-            rescue StandardError => e
-              Rails.logger.error "Message templates list error: #{e.message}"
-              error_response(
-                ApiErrorCodes::INTERNAL_ERROR,
-                e.message,
-                status: :unprocessable_entity
-              )
-            end
-          when 'POST'
-            # Create template
-            begin
-              template_params = extract_message_template_params
-              Rails.logger.info "Creating template with params: #{template_params.inspect}"
-
-              # For providers that publish templates to an external service
-              # (WhatsApp Cloud, Notificame, Evolution Go …), submit the
-              # template upstream and rely on the provider's sync flow to
-              # persist the record locally with the real approval status
-              # (PENDING/APPROVED/REJECTED). For channels without upstream
-              # template approval (Api, Email, etc.), fall back to the
-              # local-only path so behaviour is unchanged.
-              template =
-                if @inbox.channel.respond_to?(:create_template)
-                  @inbox.channel.create_template(template_params.to_h.stringify_keys)
-                else
-                  @inbox.channel.create_message_template(template_params)
-                end
-
-              # Reload channel to clear any cached associations
-              @inbox.channel.reload
-
-              success_response(
-                data: template.serialized,
-                message: 'Message template created successfully',
-                status: :created
-              )
-            rescue ActiveRecord::RecordInvalid => e
-              Rails.logger.error "Template validation error: #{e.message}"
-              error_response(
-                ApiErrorCodes::VALIDATION_ERROR,
-                e.message,
-                details: format_validation_errors(e.record.errors),
-                status: :unprocessable_entity
-              )
-            rescue StandardError => e
-              Rails.logger.error "Message template creation error: #{e.message}"
-              Rails.logger.error "Error backtrace: #{e.backtrace.first(10).join("\n")}"
-              error_response(
-                ApiErrorCodes::INTERNAL_ERROR,
-                'Failed to create message template',
-                details: e.message,
-                status: :unprocessable_entity
-              )
-            end
-          else
-            error_response(
-              ApiErrorCodes::METHOD_NOT_ALLOWED,
-              'Method not allowed',
-              status: :method_not_allowed
-            )
-          end
-        end
-
         def sync_message_templates
           Rails.logger.info '=== SYNC MESSAGE TEMPLATES START ==='
           authorize @inbox, :message_templates?
@@ -485,127 +383,34 @@ module Api
           end
         end
 
-        def update_message_template
-          Rails.logger.info '=== UPDATE MESSAGE TEMPLATE START ==='
-          Rails.logger.info "Params: #{params.inspect}"
-          Rails.logger.info "Template ID: #{params[:template_id]}"
+        # Pushes a single template up to Meta (WhatsApp Cloud) for approval. The
+        # inbox :id is a routing placeholder; the template's OWN channel supplies
+        # the WABA, so the template must already be bound to a WhatsApp Cloud
+        # channel. Async — enqueues the sync job and returns 202. (EVO-1232)
+        # Authorization is enforced by the `require_permissions` before_action
+        # (inboxes.message_templates). We deliberately do NOT call the in-action
+        # `authorize @inbox, :message_templates?`: under service-token auth there is
+        # no Pundit user, so it would raise. Mirrors EVO-1231's global path. (F7)
+        def sync_template_with_whatsapp_cloud
+          template = MessageTemplate.find(params[:template_id])
+          channel = template.channel
 
-          authorize @inbox, :update_message_template?
-          Rails.logger.info 'Authorization passed'
-
-          Rails.logger.info 'Channel type validation passed'
-
-          begin
-            template_id = params[:template_id]
-            Rails.logger.info "Template ID extracted: #{template_id}"
-
-            return render_template_id_required_error if template_id.blank?
-
-            template_params = extract_message_template_params
-            Rails.logger.info "Template params extracted: #{template_params.inspect}"
-            Rails.logger.info "Template params class: #{template_params.class}"
-            Rails.logger.info "Template params keys: #{template_params.keys}"
-            Rails.logger.info "Calling update_message_template with ID: #{template_id}"
-
-            updated_template = @inbox.channel.update_message_template(template_id, template_params)
-            Rails.logger.info "Template updated successfully"
-            Rails.logger.info "Updated template ID: #{updated_template.id}"
-            Rails.logger.info "Updated template attributes: #{updated_template.attributes.inspect}"
-
-            # Reload channel to clear any cached associations
-            @inbox.channel.reload
-
-            success_response(
-              data: { template: updated_template.serialized },
-              message: 'Template updated successfully'
-            )
-          rescue ActiveRecord::RecordNotFound
-            Rails.logger.error "Template not found: #{template_id}"
-            error_response(
-              ApiErrorCodes::RESOURCE_NOT_FOUND,
-              'Template not found',
-              status: :not_found
-            )
-          rescue ActiveRecord::RecordInvalid => e
-            Rails.logger.error "Template validation error: #{e.message}"
-            error_response(
+          unless channel.is_a?(Channel::Whatsapp) && channel.provider == 'whatsapp_cloud'
+            return error_response(
               ApiErrorCodes::VALIDATION_ERROR,
-              e.message,
-              details: format_validation_errors(e.record.errors),
+              'Template must reference a WhatsApp Cloud channel to sync',
               status: :unprocessable_entity
             )
-          rescue StandardError => e
-            Rails.logger.error "Error in update_message_template: #{e.message}"
-            Rails.logger.error "Error backtrace: #{e.backtrace.join("\n")}"
-
-            error_response(
-              ApiErrorCodes::INTERNAL_ERROR,
-              'Failed to update message template',
-              details: e.message,
-              status: :unprocessable_entity
-            )
-          ensure
-            Rails.logger.info '=== UPDATE MESSAGE TEMPLATE END ==='
           end
-        end
 
-        def delete_message_template
-          Rails.logger.info '=== DELETE MESSAGE TEMPLATE START ==='
-          Rails.logger.info "Params: #{params.inspect}"
-          Rails.logger.info "Template ID or Name: #{params[:template_id] || params[:template_name]}"
-
-          authorize @inbox, :delete_message_template?
-          Rails.logger.info 'Authorization passed'
-
-          Rails.logger.info 'Channel type validation passed'
-
-          begin
-            template_id = params[:template_id] || params[:id]
-            template_name = params[:template_name]
-
-            Rails.logger.info "Template ID: #{template_id}, Name: #{template_name}"
-
-            if template_id.present?
-              # Delete by ID (new way)
-              @inbox.channel.delete_message_template(template_id)
-              Rails.logger.info "Template deleted successfully by ID: #{template_id}"
-            elsif template_name.present?
-              # Delete by name (legacy support)
-              template = @inbox.channel.message_templates.active.find_by(name: template_name)
-              return render_template_not_found_error if template.blank?
-
-              @inbox.channel.delete_message_template(template.id)
-              Rails.logger.info "Template deleted successfully by name: #{template_name}"
-            else
-              return error_response(
-                ApiErrorCodes::MISSING_REQUIRED_FIELD,
-                'Template ID ou nome é obrigatório',
-                status: :bad_request
-              )
-            end
-
-            # Reload channel to clear any cached associations
-            @inbox.channel.reload
-
-            success_response(
-              data: nil,
-              message: 'Template deleted successfully'
-            )
-          rescue ActiveRecord::RecordNotFound
-            Rails.logger.error "Template not found"
-            render_template_not_found_error
-          rescue StandardError => e
-            Rails.logger.error "Error in delete_message_template: #{e.message}"
-            Rails.logger.error "Error backtrace: #{e.backtrace.join("\n")}"
-            error_response(
-              ApiErrorCodes::INTERNAL_ERROR,
-              'Failed to delete message template',
-              details: e.message,
-              status: :unprocessable_entity
-            )
-          ensure
-            Rails.logger.info '=== DELETE MESSAGE TEMPLATE END ==='
-          end
+          SyncMessageTemplateWithWhatsappCloudJob.perform_later(template)
+          success_response(
+            data: { template: template.serialized },
+            message: 'WhatsApp Cloud template sync enqueued',
+            status: :accepted
+          )
+        rescue ActiveRecord::RecordNotFound
+          error_response(ApiErrorCodes::RESOURCE_NOT_FOUND, 'Message template not found', status: :not_found)
         end
 
         def destroy
@@ -762,8 +567,24 @@ module Api
           @agent_bot = nil
         end
 
+        def handle_sendgrid_invalid_key(exception)
+          error_response(
+            ApiErrorCodes::VALIDATION_ERROR,
+            exception.message.presence || 'SendGrid API key is invalid',
+            status: :unprocessable_entity
+          )
+        end
+
+        def handle_sendgrid_unavailable(exception)
+          error_response(
+            ApiErrorCodes::EXTERNAL_SERVICE_ERROR,
+            exception.message.presence || 'SendGrid is currently unavailable',
+            status: :service_unavailable
+          )
+        end
+
         def create_channel
-          return unless %w[web_widget api email line telegram whatsapp sms].include?(permitted_params[:channel][:type])
+          return unless %w[web_widget api email line telegram whatsapp sms sendgrid].include?(permitted_params[:channel][:type])
 
           # Debug logs for Evolution Go channel creation
           if permitted_params[:channel][:type] == 'whatsapp' && permitted_params[:channel][:provider] == 'evolution_go'
@@ -900,7 +721,8 @@ module Api
             'line' => Channel::Line,
             'telegram' => Channel::Telegram,
             'whatsapp' => Channel::Whatsapp,
-            'sms' => Channel::Sms
+            'sms' => Channel::Sms,
+            'sendgrid' => Channel::Sendgrid
           }[permitted_params[:channel][:type]]
         end
 
@@ -963,29 +785,12 @@ module Api
           )
         end
 
-        def render_template_id_required_error
-          Rails.logger.error 'Template ID is required'
-          error_response(
-            ApiErrorCodes::MISSING_REQUIRED_FIELD,
-            'Template ID is required',
-            status: :unprocessable_entity
-          )
-        end
-
         def render_template_name_required_error
           Rails.logger.error 'Template name is blank'
           error_response(
             ApiErrorCodes::MISSING_REQUIRED_FIELD,
             'Template name is required',
             status: :unprocessable_entity
-          )
-        end
-
-        def render_template_not_found_error
-          error_response(
-            ApiErrorCodes::RESOURCE_NOT_FOUND,
-            'Template not found',
-            status: :not_found
           )
         end
 
@@ -1004,53 +809,6 @@ module Api
               }
             ]
           )
-        end
-
-        def extract_message_template_params
-          params.require(:message_template).permit(
-            :name,
-            :content,
-            :language,
-            :category,
-            :template_type,
-            :media_url,
-            :media_type,
-            :active,
-            components: [
-              :type,
-              :format,
-              :text,
-              :url,
-              {
-                buttons: [:type, :text, :url, :phone_number]
-              }
-            ],
-            variables: [:name, :label, :type, :required, :default_value, :source, :example, :position, :component],
-            settings: {},
-            metadata: {}
-          )
-        end
-
-        def find_template_by_name(template_name)
-          @inbox.channel.message_templates&.find { |t| t['name'] == template_name }
-        end
-
-        def determine_update_error_message(error_message)
-          case error_message
-          when /Template cannot be edited.*status/i
-            'Template cannot be edited in its current status. Only APPROVED, REJECTED, or PAUSED templates can be edited.'
-          when /Content already exists in this language/i
-            'Cannot update template: A template with this content already exists in this language. ' \
-            'Consider creating a new template with a different name.'
-          when /No valid fields to update/i
-            'No valid fields to update. You can only update category (for non-approved templates) and components.'
-          when /Template not found/i
-            'Template not found with the provided ID.'
-          when /Cannot change category of approved template/i
-            'Cannot change category of approved templates. You can only modify components.'
-          else
-            "Failed to update template: #{error_message}"
-          end
         end
 
       end
