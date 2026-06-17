@@ -17,8 +17,8 @@ if !contact
 end
 
 # Date range (inclusive in local time zone / server zone)
-start_date = Time.zone.parse("2026-05-05").beginning_of_day
-end_date = Time.zone.parse("2026-05-07").end_of_day
+start_date = Time.zone.parse("2026-04-30").beginning_of_day
+end_date = Time.zone.parse("2026-05-10").end_of_day
 
 puts "=================================================="
 puts "👤 Contact: #{contact.name}"
