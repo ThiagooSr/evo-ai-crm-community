@@ -4,6 +4,13 @@
 class Api::V1::PipelineItemsController < Api::V1::BaseController
   include Events::Types
 
+  # Mutating actions authorize against the pipeline write policy; reads stay at
+  # view level.
+  WRITE_ACTIONS = %w[
+    create update destroy bulk_move move_conversation
+    move_to_stage update_conversation update_custom_fields
+  ].freeze
+
   before_action :set_pipeline
   before_action :set_pipeline_item, only: [:update, :destroy, :move_to_stage, :update_conversation, :update_custom_fields]
   before_action :ensure_authorized_user
@@ -164,6 +171,7 @@ class Api::V1::PipelineItemsController < Api::V1::BaseController
   def update
     new_stage_id = params[:pipeline_stage_id]
     stage_changed = false
+    wrote_anything = false
 
     if new_stage_id.present? && new_stage_id.to_s != @pipeline_item.pipeline_stage_id.to_s
       new_stage = @pipeline.pipeline_stages.find(new_stage_id)
@@ -177,13 +185,29 @@ class Api::V1::PipelineItemsController < Api::V1::BaseController
       end
 
       stage_changed = true
+      wrote_anything = true
     end
 
-    @pipeline_item.update!(custom_fields: params[:custom_fields]) if params[:custom_fields].present?
+    if params[:custom_fields].present?
+      @pipeline_item.update!(custom_fields: params[:custom_fields])
+      wrote_anything = true
+    end
 
-    if params[:notes].present? && stage_changed
-      latest_movement = @pipeline_item.stage_movements.order(:created_at).last
-      latest_movement&.update!(notes: params[:notes])
+    # Notes persist regardless of stage change: attach to the latest movement,
+    # creating one if the item has none yet (mirrors #update_conversation).
+    if params[:notes].present?
+      persist_notes(params[:notes])
+      wrote_anything = true
+    end
+
+    # Nothing changed → don't lie with "updated successfully". Signal an explicit
+    # no-op so journey/automation callers can tell a real write from an inert call.
+    unless wrote_anything
+      return error_response(
+        ApiErrorCodes::BUSINESS_RULE_VIOLATION,
+        'No changes provided; nothing was updated',
+        status: :unprocessable_entity
+      )
     end
 
     dispatch_conversation_updated_event(@pipeline_item.conversation) if stage_changed
@@ -447,7 +471,7 @@ class Api::V1::PipelineItemsController < Api::V1::BaseController
                                              .where.not(conversation_id: nil)
                                              .pluck(:conversation_id)
 
-    current_conversations = Conversation.all
+    current_conversations = Conversations::PermissionFilterService.new(Conversation.all, current_user).perform
                       .joins(:contact, :inbox)
                       .where.not(conversations: { id: conversation_ids_in_pipeline })
                       .where.not(status: 'resolved')
@@ -523,6 +547,25 @@ class Api::V1::PipelineItemsController < Api::V1::BaseController
       ['same_pipeline', service.move_to_stage(current_item, stage)]
     else
       ['cross_pipeline', service.move_to_pipeline_stage(current_item, stage)]
+    end
+  end
+
+  # Attaches notes to the most recent stage_movement so a journey/manual note
+  # persists even when the stage didn't change. If the item somehow has no
+  # movement yet, create a manual one carrying the note (mirrors the
+  # #update_conversation fallback) so the note is never silently dropped.
+  def persist_notes(notes)
+    latest_movement = @pipeline_item.stage_movements.order(:created_at).last
+
+    if latest_movement
+      latest_movement.update!(notes: notes)
+    else
+      @pipeline_item.stage_movements.create!(
+        to_stage: @pipeline_item.pipeline_stage,
+        moved_by: Current.user,
+        movement_type: :manual,
+        notes: notes
+      )
     end
   end
 
@@ -726,7 +769,7 @@ class Api::V1::PipelineItemsController < Api::V1::BaseController
   def ensure_authorized_user
     return if service_authenticated?
 
-    authorize @pipeline, :view?
+    authorize @pipeline, WRITE_ACTIONS.include?(action_name) ? :update? : :view?
   end
 end
 # rubocop:enable Metrics/ClassLength

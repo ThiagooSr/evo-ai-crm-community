@@ -104,6 +104,11 @@ class ConversationFinder
     # Apply assignee type filter
     query = apply_assignee_type_filter(query)
 
+    # Apply chip filters (unread / groups / archived) — list-only, não afetam as contagens
+    query = apply_unread_filter(query)
+    query = apply_is_group_filter(query)
+    query = apply_archived_filter(query)
+
     # Apply search filter if needed
     query = apply_query_filter(query) if @params[:q].present?
 
@@ -115,7 +120,7 @@ class ConversationFinder
     # chip only appears later if some other action triggers a refetch with the
     # association eager-loaded.
     query = query.preload(
-      :inbox,
+      { inbox: :agent_bot_inbox },
       :contact,
       :assignee,
       :team,
@@ -146,8 +151,14 @@ class ConversationFinder
     # Allow access if user is admin or has conversations.read permission
     return query if @is_admin || @has_conversations_read
 
-    # Otherwise, filter by assigned inboxes only
-    query.where(inbox: @current_user.inboxes)
+    # Otherwise, filter by the inboxes the user may access. `assigned_inboxes`
+    # (User#assigned_inboxes) is the role-aware source: admins / users granted
+    # `conversations.read_all` see every inbox, a user with no `inbox_member`
+    # assignment sees all (zero rupture on upgrade), and a user with assignments
+    # sees only those. Using the raw `inboxes` relation here returned [] for any
+    # user without an inbox_member — collapsing the list to "no conversations"
+    # even for the account admin (the 0/74 bug).
+    query.where(inbox: @current_user.assigned_inboxes)
   end
 
   def apply_status_filter(query)
@@ -186,6 +197,37 @@ class ConversationFinder
       query.assigned
     else
       query
+    end
+  end
+
+  # Chip "Não lidas": conversas com mensagens incoming não lidas pelo agente.
+  def apply_unread_filter(query)
+    return query unless ActiveModel::Type::Boolean.new.cast(@params[:unread])
+
+    query.unread
+  end
+
+  # Chip "Grupos": conversas cujo contato é um grupo (contact.type = 'group').
+  # Naturalmente vazio em canais sem grupos (cloud/Telegram). O contato já está
+  # joined em build_base_filter_query.
+  def apply_is_group_filter(query)
+    return query unless ActiveModel::Type::Boolean.new.cast(@params[:is_group])
+
+    query.where(contacts: { type: 'group' })
+  end
+
+  # Aba "Arquivadas": archived vive em custom_attributes.archived (jsonb boolean).
+  # archived=true  -> só arquivadas; archived=false -> exclui arquivadas.
+  # Param ausente = sem filtro (lista padrão inalterada; o front esconde as
+  # arquivadas client-side na visão normal). `->>'archived'` extrai o boolean JSON
+  # como texto ('true'); IS DISTINCT FROM cobre null/false/ausente.
+  def apply_archived_filter(query)
+    return query if @params[:archived].blank?
+
+    if ActiveModel::Type::Boolean.new.cast(@params[:archived])
+      query.where("conversations.custom_attributes->>'archived' = 'true'")
+    else
+      query.where("conversations.custom_attributes->>'archived' IS DISTINCT FROM 'true'")
     end
   end
 

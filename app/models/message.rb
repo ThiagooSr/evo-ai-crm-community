@@ -56,7 +56,7 @@ class Message < ApplicationRecord
   }.to_json.freeze
 
   before_validation :ensure_content_type
-  before_validation :prevent_message_flooding
+  before_validation :prevent_message_flooding, unless: :imported?
   before_save :ensure_processed_message_content
   before_save :ensure_in_reply_to
 
@@ -74,8 +74,8 @@ class Message < ApplicationRecord
   # when you have a temperory id in your frontend and want it echoed back via action cable
   attr_accessor :echo_id
 
-  enum message_type: { incoming: 0, outgoing: 1, activity: 2, template: 3 }
-  enum content_type: {
+  enum :message_type, { incoming: 0, outgoing: 1, activity: 2, template: 3 }
+  enum :content_type, {
     text: 0,
     input_text: 1,
     input_textarea: 2,
@@ -89,17 +89,24 @@ class Message < ApplicationRecord
     integrations: 10,
     sticker: 11
   }
-  enum status: { sent: 0, delivered: 1, read: 2, failed: 3 }
+  enum :status, { sent: 0, delivered: 1, read: 2, failed: 3 }
+  # Explicit attribute keeps the model bootable when the source column has not been
+  # migrated yet (EVO-1999 deploy scenario: Puma boots before db:migrate runs).
+  # Type/default must stay in sync with db/migrate/20260622120000_add_source_to_messages.rb.
+  attribute :source, :integer, default: 0
+  enum :source, { live: 0, imported: 1 }
   # [:submitted_email, :items, :submitted_values] : Used for bot message types
   # [:email] : Used by conversation_continuity incoming email messages
   # [:in_reply_to] : Used to reply to a particular tweet in threads
   # [:deleted] : Used to denote whether the message was deleted by the agent
+  # [:revoked_by_contact] : Contact deleted (revoked) the message on WhatsApp; content is kept and shown with a notice
   # [:external_created_at] : Can specify if the message was created at a different timestamp externally
   # [:external_error : Can specify if the message creation failed due to an error at external API
   # [:is_reaction] : Used to denote if the message is a reaction and differentiate it from a simple reply message
   # [:is_edited, :previous_content] : Used to indicated edited message and previous content (before edit)
 
   store :content_attributes, accessors: [:submitted_email, :items, :submitted_values, :email, :in_reply_to, :deleted,
+                                         :revoked_by_contact, :revoke_propagated,
                                          :external_created_at, :story_sender, :story_id, :external_error,
                                          :translations, :in_reply_to_external_id, :is_unsupported,
                                          :is_reaction, :is_edited, :previous_content], coder: JSON
@@ -126,9 +133,9 @@ class Message < ApplicationRecord
   has_one :csat_survey_response, dependent: :destroy_async
   has_many :notifications, as: :primary_actor, dependent: :destroy_async
 
-  after_create_commit :execute_after_create_commit_callbacks
-  after_create_commit :publish_message_created
-  after_create_commit :sync_message_event
+  after_create_commit :execute_after_create_commit_callbacks, unless: :imported?
+  after_create_commit :publish_message_created, unless: :imported?
+  after_create_commit :sync_message_event, unless: :imported?
   after_update_commit :dispatch_update_event
   after_update_commit :publish_message_updated
   after_destroy_commit :publish_message_deleted

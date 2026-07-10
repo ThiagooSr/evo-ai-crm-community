@@ -20,6 +20,7 @@
 class Channel::Whatsapp < ApplicationRecord
   include Channelable
   include Reauthorizable
+  include EvolutionHubReconcilable
   include ChannelMessageTemplates
   include EvolutionHubChannelCleanup
 
@@ -84,6 +85,18 @@ class Channel::Whatsapp < ApplicationRecord
     else
       Whatsapp::Providers::Whatsapp360DialogService.new(whatsapp_channel: self)
     end
+  end
+
+  # Propagates an agent's message deletion to the provider (delete-for-everyone),
+  # where supported. Returns false (CRM-only) for providers without delete_message.
+  def delete_message(message)
+    service = provider_service
+    return false unless service.respond_to?(:delete_message)
+
+    service.delete_message(message)
+  rescue StandardError => e
+    Rails.logger.error("Channel::Whatsapp#delete_message failed: #{e.message}")
+    false
   end
 
   def use_internal_host?

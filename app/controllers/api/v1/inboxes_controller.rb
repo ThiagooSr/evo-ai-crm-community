@@ -36,7 +36,7 @@ module Api
         })
 
         def index
-          @inboxes = Inbox.order_by_name.includes(:channel, { avatar_attachment: [:blob] })
+          @inboxes = current_user.assigned_inboxes.order_by_name.includes(:channel, { avatar_attachment: [:blob] })
 
           apply_pagination
 
@@ -562,7 +562,12 @@ module Api
         end
 
         def fetch_agent_bot
-          @agent_bot = AgentBot.find(params[:agent_bot]) if params[:agent_bot]
+          # The frontend posts the bot under `agent_bot`, but server-side callers
+          # (journeys / evo-flow assign-bot node) post it under `agent_bot_id`.
+          # Accept both so the binding actually persists instead of silently
+          # falling through to the no-op branch and returning 200. (EVO-1900)
+          bot_id = params[:agent_bot].presence || params[:agent_bot_id].presence
+          @agent_bot = AgentBot.find(bot_id) if bot_id
         rescue ActiveRecord::RecordNotFound
           @agent_bot = nil
         end
@@ -697,8 +702,10 @@ module Api
         end
 
         def inbox_attributes
-          [:name, :avatar, :display_name, :greeting_enabled, :greeting_message, :enable_email_collect, :csat_survey_enabled,
-           :enable_auto_assignment, :working_hours_enabled, :out_of_office_message, :timezone, :allow_messages_after_resolved,
+          [:name, :avatar, :display_name, :greeting_enabled, :greeting_message, :greeting_message_template_id,
+           :enable_email_collect, :csat_survey_enabled,
+           :enable_auto_assignment, :working_hours_enabled, :out_of_office_message, :out_of_office_message_template_id,
+           :timezone, :allow_messages_after_resolved,
            :lock_to_single_conversation, :sender_name_type, :business_name, :default_conversation_status,
            { csat_config: [:display_type, :message, { survey_rules: [:operator, { values: [] }, { triggers: [:type, :operator, { values: [] }, { stage_ids: [] }, :pattern, :field, :days, :time, :minutes] }] }] }]
         end

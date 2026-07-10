@@ -2,26 +2,28 @@
 #
 # Table name: contacts
 #
-#  id                    :uuid             not null, primary key
-#  additional_attributes :jsonb
-#  blocked               :boolean          default(FALSE), not null
-#  contact_type          :integer          default("visitor")
-#  country_code          :string           default("")
-#  custom_attributes     :jsonb
-#  email                 :string
-#  identifier            :string
-#  industry              :string
-#  last_activity_at      :datetime
-#  last_name             :string           default("")
-#  location              :string           default("")
-#  middle_name           :string           default("")
-#  name                  :string           default("")
-#  phone_number          :string
-#  type                  :enum             default("person"), not null
-#  website               :string
-#  created_at            :datetime         not null
-#  updated_at            :datetime         not null
-#  tax_id                :string(14)
+#  id                       :uuid             not null, primary key
+#  additional_attributes    :jsonb
+#  blocked                  :boolean          default(FALSE), not null
+#  contact_type             :integer          default("visitor")
+#  country_code             :string           default("")
+#  custom_attributes        :jsonb
+#  email                    :string
+#  email_suppressed         :boolean          default(FALSE), not null
+#  email_suppression_reason :string
+#  identifier               :string
+#  industry                 :string
+#  last_activity_at         :datetime
+#  last_name                :string           default("")
+#  location                 :string           default("")
+#  middle_name              :string           default("")
+#  name                     :string           default("")
+#  phone_number             :string
+#  type                     :enum             default("person"), not null
+#  website                  :string
+#  created_at               :datetime         not null
+#  updated_at               :datetime         not null
+#  tax_id                   :string(14)
 #
 # Indexes
 #
@@ -82,7 +84,7 @@ class Contact < ApplicationRecord
   before_destroy :ensure_pipeline_items_cleanup, :publish_contact_deleted
   after_destroy_commit :dispatch_destroy_event
 
-  enum contact_type: { visitor: 0, lead: 1, customer: 2 }
+  enum :contact_type, { visitor: 0, lead: 1, customer: 2 }
 
   scope :persons, -> { where(type: 'person') }
   scope :companies, -> { where(type: 'company') }
@@ -259,7 +261,30 @@ class Contact < ApplicationRecord
 
   def prepare_contact_attributes
     prepare_email_attribute
+    prepare_phone_number_attribute
     prepare_jsonb_attributes
+  end
+
+  # Normalize the phone number to the canonical form WhatsApp resolves to, so that
+  # every write path (leads API, widget, import, inbound WhatsApp) converges on one
+  # string and stops creating duplicate contacts. See Whatsapp::PhoneNumberNormalizer
+  # (a faithful port of Evolution API's createJid). The E.164 format validation below
+  # remains the final guard.
+  def prepare_phone_number_attribute
+    return if phone_number.blank?
+
+    # Only normalize when the value is actually being set or changed in this save.
+    # Re-normalizing an untouched persisted record would lazily rewrite legacy
+    # numbers (e.g. older inbound 13-digit form) and could collide with the
+    # uniqueness validation against a pre-existing twin — turning a harmless
+    # legacy duplicate into a hard save error. New records and real edits still
+    # get normalized; cleaning up legacy twins is a separate dedupe job.
+    return unless phone_number_changed?
+
+    digits = Whatsapp::PhoneNumberNormalizer.call(phone_number)
+    return if digits.blank?
+
+    self.phone_number = "+#{digits}"
   end
 
   def prepare_email_attribute
@@ -482,7 +507,10 @@ class Contact < ApplicationRecord
     default_pipeline = Pipeline.default.first
     return unless default_pipeline
 
-    return if default_pipeline.pipeline_items.exists?(contact: self)
+    # Don't auto-assign to the default pipeline if the contact already belongs to
+    # an active journey in ANY pipeline — otherwise the same contact ends up in two
+    # pipelines at once (e.g. a custom "Jornada Pós-Compra" item plus a default one).
+    return if pipeline_items.active.exists?
 
     default_pipeline.add_contact(self, nil, nil)
   rescue StandardError => e

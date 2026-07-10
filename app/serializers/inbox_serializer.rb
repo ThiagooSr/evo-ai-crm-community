@@ -25,8 +25,9 @@ module InboxSerializer
     # It will be conditionally added later only for administrators
     result = inbox.as_json(
       only: [:id, :channel_id, :name, :display_name, :channel_type, :greeting_enabled,
-             :greeting_message, :enable_email_collect, :csat_survey_enabled,
+             :greeting_message, :greeting_message_template_id, :enable_email_collect, :csat_survey_enabled,
              :enable_auto_assignment, :working_hours_enabled, :out_of_office_message,
+             :out_of_office_message_template_id,
              :timezone, :allow_messages_after_resolved, :auto_assignment_config,
              :business_name, :portal_id,
              :sender_name_type, :additional_attributes, :csat_config,
@@ -76,6 +77,7 @@ module InboxSerializer
         result['from_name'] = inbox.channel.from_name
         result['reply_to'] = inbox.channel.reply_to
         result['sender_domain'] = inbox.channel.sender_domain
+        result['email_signature'] = inbox.channel.email_signature
         result['api_key_present'] = inbox.channel.api_key.present?
         result['webhook_registration_status'] = inbox.channel.webhook_registration_status
       end

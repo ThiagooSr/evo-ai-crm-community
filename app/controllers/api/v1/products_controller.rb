@@ -1,11 +1,12 @@
 class Api::V1::ProductsController < Api::V1::BaseController
   require_permissions({
-    index:   'products.read',
-    show:    'products.read',
-    create:  'products.create',
-    update:  'products.update',
-    destroy: 'products.delete'
-  })
+                        index: 'products.read',
+                        show: 'products.read',
+                        create: 'products.create',
+                        update: 'products.update',
+                        destroy: 'products.delete',
+                        bulk: 'products.create'
+                      })
 
   before_action :fetch_product, only: %i[show update destroy]
 
@@ -57,6 +58,30 @@ class Api::V1::ProductsController < Api::V1::BaseController
     end
   end
 
+  def bulk
+    items = extract_bulk_items
+    return if items.nil?
+
+    if bulk_dry_run?
+      render_bulk_dry_run(Products::BulkImporter.new(items, dry_run: true).call)
+    else
+      created = Products::BulkImporter.new(items).call
+      success_response(
+        data: ProductSerializer.serialize_collection(created.map(&:reload)),
+        meta: { created: created.size, updated: 0, skipped: 0 },
+        message: "#{created.size} products created successfully",
+        status: :created
+      )
+    end
+  rescue Products::BulkImporter::BulkImportError => e
+    error_response(
+      ApiErrorCodes::VALIDATION_ERROR,
+      'Bulk import failed; no products were created',
+      details: e.errors_payload,
+      status: :unprocessable_entity
+    )
+  end
+
   def destroy
     if @product.destroy
       success_response(
@@ -66,9 +91,9 @@ class Api::V1::ProductsController < Api::V1::BaseController
     else
       # restrict_with_error on pipeline_item_products / variants in use
       error_response(
-        code: ApiErrorCodes::VALIDATION_ERROR,
-        message: 'Product is in use and cannot be deleted',
-        details: @product.errors.full_messages,
+        ApiErrorCodes::VALIDATION_ERROR,
+        'Product is in use and cannot be deleted',
+        details: format_validation_errors(@product.errors),
         status: :unprocessable_entity
       )
     end
@@ -80,9 +105,54 @@ class Api::V1::ProductsController < Api::V1::BaseController
     @product = Product.find(params[:id])
   rescue ActiveRecord::RecordNotFound
     error_response(
-      code: ApiErrorCodes::RESOURCE_NOT_FOUND,
-      message: "Product with id #{params[:id]} not found",
+      ApiErrorCodes::RESOURCE_NOT_FOUND,
+      "Product with id #{params[:id]} not found",
       status: :not_found
+    )
+  end
+
+  def extract_bulk_items
+    raw_items = params[:products]
+    items = raw_items.is_a?(Array) || raw_items.is_a?(ActionController::Parameters) ? Array(raw_items) : []
+    return reject_bulk(ApiErrorCodes::VALIDATION_ERROR, 'products array is required and must not be empty') if items.empty?
+    return reject_bulk_limit(items.size) if items.size > Products::BulkImporter::MAX_ITEMS
+
+    items
+  end
+
+  def reject_bulk(code, message, details: nil)
+    error_response(code, message, details: details, status: :unprocessable_entity)
+    nil
+  end
+
+  def bulk_dry_run?
+    ActiveModel::Type::Boolean.new.cast(params[:dry_run])
+  end
+
+  def render_bulk_dry_run(result)
+    success_response(
+      data: {
+        dry_run: true,
+        would_create: result.would_create,
+        would_update: [],
+        would_skip: [],
+        errors: result.errors
+      },
+      meta: {
+        created: result.would_create.size,
+        updated: 0,
+        skipped: 0,
+        errors: result.errors.size
+      }
+    )
+  end
+
+  def reject_bulk_limit(received)
+    max = Products::BulkImporter::MAX_ITEMS
+    reject_bulk(
+      ApiErrorCodes::LIMIT_EXCEEDED,
+      "Bulk import exceeds maximum of #{max} items per request",
+      details: { max: max, received: received }
     )
   end
 
@@ -108,7 +178,7 @@ class Api::V1::ProductsController < Api::V1::BaseController
         variants_attributes: [
           :id, :_destroy, :name, :sku,
           :price_override, :stock_quantity, :position,
-          attributes_data: {}
+          { attributes_data: {} }
         ]
       )
   end
@@ -142,9 +212,9 @@ class Api::V1::ProductsController < Api::V1::BaseController
 
   def validation_error_response(record)
     error_response(
-      code: ApiErrorCodes::VALIDATION_ERROR,
-      message: 'Validation failed',
-      details: record.errors.full_messages,
+      ApiErrorCodes::VALIDATION_ERROR,
+      'Validation failed',
+      details: format_validation_errors(record.errors),
       status: :unprocessable_entity
     )
   end
