@@ -144,7 +144,21 @@ class User < ApplicationRecord
   end
 
   def assigned_inboxes
-    administrator? ? Inbox.all : inboxes
+    # Admins and users granted `conversations.read_all` (resolved once per request
+    # into Current by EvoAuthConcern — bearer/api-token — or by
+    # OauthAuthorizationHelper#authenticate_oauth_token! — OAuth) see every inbox.
+    # `Current.evo_can_read_all_inboxes` is nil outside a request (jobs); nil is
+    # treated as false here.
+    #
+    # There is deliberately NO zero-membership fallback: "see everything" comes
+    # ONLY from the conversations.read_all grant (which the upgrade migration
+    # gave every pre-existing role, so revoking it is the admin's explicit act).
+    # The old `inbox_members.empty? -> Inbox.all` degrade made that revoke
+    # unenforceable for users with no memberships — the common state, since
+    # most installs never assigned inboxes.
+    return Inbox.all if administrator? || Current.evo_can_read_all_inboxes
+
+    inboxes
   end
 
   def serializable_hash(options = nil)

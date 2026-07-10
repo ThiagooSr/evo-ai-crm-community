@@ -29,10 +29,30 @@ module Api
             OPENAI_PROMPT_FIX_GRAMMAR OPENAI_PROMPT_SHORTEN OPENAI_PROMPT_EXPAND
             OPENAI_PROMPT_FRIENDLY OPENAI_PROMPT_FORMAL OPENAI_PROMPT_SIMPLIFY
           ],
+          # Agent/MCP OAuth integrations. The KEY names MUST match what each
+          # integration's credentials_controller serves to the processor via
+          # GlobalConfigService.load(...) — otherwise the superadmin saves a value
+          # the OAuth flow never reads. Naming is intentionally per-integration
+          # (some `<SVC>_OAUTH_CLIENT_ID`, some `<SVC>_CLIENT_ID`) to mirror those
+          # controllers; do not "normalize" without changing them in lockstep.
           'linear' => %w[LINEAR_CLIENT_ID LINEAR_CLIENT_SECRET],
+          # NOTE: `hubspot` here is the CRM-NATIVE HubSpot integration
+          # (HUBSPOT_CLIENT_ID, read by app/controllers/hubspot/* and
+          # integrations/app.rb). The agent/MCP HubSpot OAuth flow uses a SEPARATE
+          # key (HUBSPOT_OAUTH_CLIENT_ID, served by integrations/hubspot/credentials_controller)
+          # and is intentionally not exposed here — leaving native config untouched.
           'hubspot' => %w[HUBSPOT_CLIENT_ID HUBSPOT_CLIENT_SECRET],
           'shopify' => %w[SHOPIFY_CLIENT_ID SHOPIFY_CLIENT_SECRET],
           'slack' => %w[SLACK_CLIENT_ID SLACK_CLIENT_SECRET],
+          'github' => %w[GITHUB_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_SECRET],
+          'notion' => %w[NOTION_OAUTH_CLIENT_ID NOTION_OAUTH_CLIENT_SECRET],
+          'asana' => %w[ASANA_OAUTH_CLIENT_ID ASANA_OAUTH_CLIENT_SECRET],
+          'canva' => %w[CANVA_OAUTH_CLIENT_ID CANVA_OAUTH_CLIENT_SECRET],
+          'google_calendar' => %w[GOOGLE_CALENDAR_CLIENT_ID GOOGLE_CALENDAR_CLIENT_SECRET],
+          'google_sheets' => %w[GOOGLE_SHEETS_CLIENT_ID GOOGLE_SHEETS_CLIENT_SECRET],
+          'monday' => %w[MONDAY_OAUTH_CLIENT_ID MONDAY_OAUTH_CLIENT_SECRET],
+          'paypal' => %w[PAYPAL_OAUTH_CLIENT_ID PAYPAL_OAUTH_CLIENT_SECRET],
+          'atlassian' => %w[ATLASSIAN_OAUTH_CLIENT_ID ATLASSIAN_OAUTH_CLIENT_SECRET],
           'microsoft' => %w[AZURE_APP_ID AZURE_APP_SECRET],
           'twitter' => %w[TWITTER_APP_ID TWITTER_CONSUMER_KEY TWITTER_CONSUMER_SECRET TWITTER_ENVIRONMENT],
           'inbound_email' => %w[
@@ -106,6 +126,11 @@ module Api
           result
         end
 
+        # Leading run of bullet chars used by InstallationConfig#masked_value
+        # ("••••••••<last4>"). A payload starting with this is a masked sentinel
+        # echoed back by a frontend, never a real credential.
+        MASK_PREFIX = ("\u2022" * 4).freeze
+
         def save_configs(allowed_keys)
           config_params = params.require(:app_config).permit(*allowed_keys)
           ActiveRecord::Base.transaction do
@@ -113,11 +138,22 @@ module Api
               next unless config_params.key?(key)
 
               value = config_params[key]
-              next if value.nil? && key.end_with?('_SECRET')
+              next if preserve_existing?(key, value)
 
               GlobalConfig.set(key, value)
             end
           end
+        end
+
+        # True when an incoming value must NOT overwrite the stored config:
+        #   - nil on a sensitive key → the admin didn't touch the field (preserve).
+        #   - a masked '••••…' sentinel on a sensitive key → never persist the mask
+        #     back as the real credential (defense for masked-frontend keys).
+        def preserve_existing?(key, value)
+          sensitive = InstallationConfig.sensitive_name?(key)
+          return false unless sensitive
+
+          value.nil? || (value.is_a?(String) && value.start_with?(MASK_PREFIX))
         end
 
         def run_connection_test(config_type)
@@ -162,7 +198,7 @@ module Api
 
           required.select do |key|
             effective =
-              if !incoming.key?(key) || (incoming[key].nil? && key.end_with?('_SECRET'))
+              if !incoming.key?(key) || (incoming[key].nil? && InstallationConfig.sensitive_name?(key))
                 GlobalConfigService.load(key, nil)
               else
                 incoming[key]

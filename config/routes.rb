@@ -4,8 +4,11 @@ Rails.application.routes.draw do
   get '/metrics', to: 'health#metrics'
   post '/api/v1/dynamic_oauth/validate_client', to: 'api/v1/dynamic_oauth#validate_dynamic_client'
 
-  ## renders the frontend paths only if its not an api only server
-  if ActiveModel::Type::Boolean.new.cast(ENV.fetch('EVOLUTION_API_ONLY_SERVER', false))
+  ## Renders the frontend paths only if this is not an API-only server.
+  ## Default true: this backend is API-only (vite_rails removed); the SPA is served
+  ## by the separate evo-frontend service. With default false the backend registered
+  ## root->dashboard#index and tried to render the missing 'vueapp' layout -> HTTP 406.
+  if ActiveModel::Type::Boolean.new.cast(ENV.fetch('EVOLUTION_API_ONLY_SERVER', true))
     root to: 'api#index'
   else
     root to: 'dashboard#index'
@@ -22,9 +25,11 @@ Rails.application.routes.draw do
     get '/app/settings/inboxes/new/:inbox_id/agents', to: 'dashboard#index', as: 'app_whatsapp_inbox_agents'
     get '/app/settings/inboxes/:inbox_id', to: 'dashboard#index', as: 'app_instagram_inbox_settings'
     get '/app/settings/inboxes/:inbox_id', to: 'dashboard#index', as: 'app_email_inbox_settings'
-
-    resource :slack_uploads, only: [:show]
   end
+
+  ## Slack fetches these avatar/attachment URLs directly (not the SPA), so the route
+  ## must exist even when the backend is API-only.
+  resource :slack_uploads, only: [:show]
 
   get '/api', to: 'api#index'
   namespace :api, defaults: { format: 'json' } do
@@ -109,6 +114,7 @@ Rails.application.routes.draw do
           post :filter
           get :available_for_pipeline
           get :unread_count
+          post :import
         end
         resources :messages, only: [:index, :create, :destroy, :update], controller: 'conversations/messages' do
           member do
@@ -126,6 +132,7 @@ Rails.application.routes.draw do
           post :transcript
           post :email_team
           post :toggle_status
+          post :return_to_bot
           post :toggle_priority
           post :toggle_typing_status
           post :update_last_seen
@@ -256,7 +263,26 @@ Rails.application.routes.draw do
 
       # Product Catalog (EVO-1109)
       resources :products, only: [:index, :create, :show, :update, :destroy], controller: 'products' do
+        # Bulk import endpoint (EVO-1555 S1)
+        collection do
+          post :bulk
+        end
         resources :variants, controller: 'products/variants', only: [:index, :create, :update, :destroy]
+      end
+
+      # Lead-capture form builder admin CRUD (B14.01).
+      resources :crm_forms, only: [:index, :create, :show, :update, :destroy], controller: 'crm_forms' do
+        get :leads, on: :member
+      end
+
+      # Chat-page builder admin CRUD (B14.08).
+      resources :chat_pages, only: [:index, :create, :show, :update, :destroy], controller: 'chat_pages'
+
+      # ERP webhook ingress (EVO-1735 S3.0) — extensible adapter registry,
+      # ships with `:noop` only. Adapter for a concrete ERP lands in S3.1
+      # when a customer pilot is contracted.
+      namespace :webhooks do
+        post 'erp/:provider', to: 'erp#receive', as: :erp_webhook
       end
 
       # Attach/detach products to AI agents (agent lives in evo_core; we only
@@ -284,7 +310,6 @@ Rails.application.routes.draw do
           get :conversations
           get :messages
           get :contacts
-          get :articles
         end
       end
 
@@ -319,8 +344,8 @@ Rails.application.routes.draw do
           post 'facebook/feed', to: 'webhooks/facebook#feed_events'
 
           # Twitter webhooks
-          get 'twitter', to: 'api/v1/webhooks#twitter_crc'
-          post 'twitter', to: 'api/v1/webhooks#twitter_events'
+          get 'twitter', to: '/api/v1/webhooks#twitter_crc'
+          post 'twitter', to: '/api/v1/webhooks#twitter_events'
 
           # Gmail webhooks
           post 'gmail/pubsub', to: 'webhooks/gmail#pubsub'
@@ -653,35 +678,6 @@ Rails.application.routes.draw do
         end
       end
     end
-
-    namespace :v2 do
-      resources :summary_reports, only: [], controller: 'summary_reports' do
-        collection do
-          get :agent
-          get :team
-          get :inbox
-        end
-      end
-      resources :reports, only: [:index], controller: 'reports' do
-        collection do
-          get :summary
-          get :bot_summary
-          get :agents
-          get :inboxes
-          get :labels
-          get :teams
-          get :conversations
-          get :conversation_traffic
-          get :bot_metrics
-        end
-      end
-      resources :live_reports, only: [], controller: 'live_reports' do
-        collection do
-          get :conversation_metrics
-          get :grouped_conversation_metrics
-        end
-      end
-    end
   end
 
   namespace :public, defaults: { format: 'json' } do
@@ -707,6 +703,13 @@ Rails.application.routes.draw do
         end
 
         resources :leads, only: [:create]
+
+        # Anonymous lead-capture forms (B14.01): resolved by public slug, no API key.
+        get  'forms/:slug',             to: 'forms#show'
+        post 'forms/:slug/submissions', to: 'forms#create'
+
+        # Anonymous public chat page (B14.03): resolved by slug, returns website_token.
+        get 'chat_pages/:slug', to: 'chat_pages#show'
 
         resources :csat_survey, only: [:show, :update]
       end
@@ -767,11 +770,6 @@ Rails.application.routes.draw do
 
   require 'sidekiq/web'
   require 'sidekiq/cron/web'
-
-  namespace :installation do
-    get 'onboarding', to: 'onboarding#index'
-    post 'onboarding', to: 'onboarding#create'
-  end
 
   # Enterprise / consumer plugins mount their routes through the plugin_loader
   # extension point. No-op in the community release — the registry is empty

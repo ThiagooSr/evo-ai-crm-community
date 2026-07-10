@@ -19,6 +19,7 @@
 class Channel::Instagram < ApplicationRecord
   include Channelable
   include Reauthorizable
+  include EvolutionHubReconcilable
   include ChannelMessageTemplates
   include EvolutionHubChannelCleanup
   self.table_name = 'channel_instagram'

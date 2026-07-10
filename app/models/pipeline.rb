@@ -31,7 +31,7 @@ class Pipeline < ApplicationRecord
   validates :name, presence: true, uniqueness: true
   validates :pipeline_type, inclusion: { in: VALID_TYPES }
 
-  enum visibility: { private: 0, team: 1, public: 2 }, _prefix: :visibility
+  enum :visibility, { private: 0, team: 1, public: 2 }, prefix: :visibility
 
   scope :active, -> { where(is_active: true) }
   scope :default, -> { where(is_default: true) }
@@ -75,6 +75,22 @@ class Pipeline < ApplicationRecord
     pipeline_stages.left_joins(:pipeline_items)
                    .group(:id, :name)
                    .count('pipeline_items.id')
+  end
+
+  # Valor TOTAL do funil = soma dos serviços (custom_fields.services) de cada item.
+  # É o mesmo número que a UI mostra no header ("Valor Total R$X"). O stats só trazia
+  # CONTAGEM; sem isto, qualquer relatório financeiro (inclusive o do assistente) conclui
+  # "não há valores". services_total_value já existe no PipelineItem.
+  def total_value
+    pipeline_items.sum(&:services_total_value)
+  end
+
+  # Valor agregado POR ETAPA (stage_id/name => soma dos serviços dos itens daquela etapa).
+  # Espelha stage_counts, mas com dinheiro em vez de contagem.
+  def stage_values
+    pipeline_stages.each_with_object({}) do |stage, acc|
+      acc[stage.name] = stage.pipeline_items.sum(&:services_total_value)
+    end
   end
 
   def push_event_data

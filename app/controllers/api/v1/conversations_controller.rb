@@ -12,19 +12,33 @@ class Api::V1::ConversationsController < Api::V1::BaseController
     update: 'conversations.update',
     destroy: 'conversations.delete',
     toggle_status: 'conversations.toggle_status',
+    return_to_bot: 'conversations.toggle_status',
     toggle_priority: 'conversations.toggle_priority',
     custom_attributes: 'conversations.custom_attributes',
     pin: 'conversations.update',
     unpin: 'conversations.update',
     archive: 'conversations.update',
     unarchive: 'conversations.update',
-    transcript: 'conversations.export',
+    transcript: 'conversations.transcript',
     email_team: 'conversations.update',
     available_for_pipeline: 'conversations.read',
-    unread_count: 'conversations.read'
+    unread_count: 'conversations.read',
+    import: 'conversations.import',
+    mute: 'conversations.mute',
+    unmute: 'conversations.unmute',
+    update_last_seen: 'conversations.update_last_seen',
+    unread: 'conversations.unread',
+    toggle_typing_status: 'conversations.toggle_typing_status',
+    meta: 'conversations.meta',
+    search: 'conversations.search',
+    filter: 'conversations.filter',
+    attachments: 'conversations.attachments'
   })
 
-  before_action :conversation, except: [:index, :meta, :search, :create, :filter, :unread_count]
+  CONVERSATIONS_IMPORT_ROW_LIMIT = 50_000
+  CONVERSATIONS_IMPORT_MAX_BYTES = 50 * 1024 * 1024
+
+  before_action :conversation, except: [:index, :meta, :search, :create, :filter, :unread_count, :import]
   before_action :inbox, :contact, :contact_inbox, only: [:create]
 
   ATTACHMENT_RESULTS_PER_PAGE = 100
@@ -53,10 +67,61 @@ class Api::V1::ConversationsController < Api::V1::BaseController
   def meta
     result = conversation_finder.perform
     @conversations_count = result[:count]
-    
+
     success_response(
       data: { count: @conversations_count },
       message: 'Conversation metadata retrieved successfully'
+    )
+  end
+
+  def import
+    if params[:import_file].blank?
+      return error_response(
+        ApiErrorCodes::MISSING_REQUIRED_FIELD,
+        I18n.t('errors.conversations.import.missing_file'),
+        details: { field: 'import_file', message: 'is required' },
+        status: :unprocessable_entity
+      )
+    end
+
+    file_size = params[:import_file].respond_to?(:size) ? params[:import_file].size : 0
+    if file_size > CONVERSATIONS_IMPORT_MAX_BYTES
+      return error_response(
+        ApiErrorCodes::INVALID_PARAMETER,
+        I18n.t('errors.conversations.import.too_large_bytes', limit: CONVERSATIONS_IMPORT_MAX_BYTES),
+        details: { byte_size: file_size, limit: CONVERSATIONS_IMPORT_MAX_BYTES },
+        status: :unprocessable_entity
+      )
+    end
+
+    row_count, malformed_error = count_csv_rows(params[:import_file])
+    if malformed_error
+      return error_response(
+        ApiErrorCodes::INVALID_PARAMETER,
+        I18n.t('errors.conversations.import.invalid_csv', error: malformed_error),
+        status: :unprocessable_entity
+      )
+    end
+
+    if row_count > CONVERSATIONS_IMPORT_ROW_LIMIT
+      return error_response(
+        ApiErrorCodes::INVALID_PARAMETER,
+        I18n.t('errors.conversations.import.too_large', limit: CONVERSATIONS_IMPORT_ROW_LIMIT),
+        details: { row_count: row_count, limit: CONVERSATIONS_IMPORT_ROW_LIMIT },
+        status: :unprocessable_entity
+      )
+    end
+
+    data_import = ActiveRecord::Base.transaction do
+      import = DataImport.create!(data_type: 'conversations')
+      import.import_file.attach(params[:import_file])
+      import
+    end
+
+    success_response(
+      data: { data_import_id: data_import.id },
+      message: 'Conversations import accepted',
+      status: :accepted
     )
   end
 
@@ -116,7 +181,12 @@ class Api::V1::ConversationsController < Api::V1::BaseController
     success_response(
       data: ConversationSerializer.serialize(
         @conversation,
-        include_messages: true,
+        # include_messages: false — o front carrega mensagens pela rota paginada
+        # /conversations/:id/messages; serializar a thread inteira aqui (e sem
+        # preload de :messages) causava N+1 de ~6s por request. Nenhum consumidor
+        # de show lê .messages (verificado no sistema inteiro). O CREATE mantém
+        # true (o evo-flow/campanhas lê create's messages[0].id).
+        include_messages: false,
         include_labels: true,
         labels_by_title: labels_by_title,
         labels_by_id: labels_by_id
@@ -145,8 +215,8 @@ class Api::V1::ConversationsController < Api::V1::BaseController
   rescue StandardError => e
     Rails.logger.error "Conversation creation failed: #{e.message}"
     error_response(
-      code: ApiErrorCodes::VALIDATION_ERROR,
-      message: 'Conversation creation failed',
+      ApiErrorCodes::VALIDATION_ERROR,
+      'Conversation creation failed',
       details: e.message,
       status: :unprocessable_entity
     )
@@ -166,8 +236,8 @@ class Api::V1::ConversationsController < Api::V1::BaseController
       )
     else
       error_response(
-        code: ApiErrorCodes::VALIDATION_ERROR,
-        message: 'Validation failed',
+        ApiErrorCodes::VALIDATION_ERROR,
+        'Validation failed',
         details: @conversation.errors.full_messages,
         status: :unprocessable_entity
       )
@@ -198,8 +268,8 @@ class Api::V1::ConversationsController < Api::V1::BaseController
          CustomExceptions::CustomFilter::InvalidQueryOperator,
          CustomExceptions::CustomFilter::InvalidValue => e
     error_response(
-      code: ApiErrorCodes::INVALID_PARAMETER,
-      message: 'Invalid filter parameters',
+      ApiErrorCodes::INVALID_PARAMETER,
+      'Invalid filter parameters',
       details: e.message,
       status: :bad_request
     )
@@ -267,8 +337,8 @@ class Api::V1::ConversationsController < Api::V1::BaseController
   def transcript
     if params[:email].blank?
       return error_response(
-        code: ApiErrorCodes::MISSING_REQUIRED_FIELD,
-        message: 'Email parameter is required',
+        ApiErrorCodes::MISSING_REQUIRED_FIELD,
+        'Email parameter is required',
         status: :bad_request
       )
     end
@@ -311,11 +381,21 @@ class Api::V1::ConversationsController < Api::V1::BaseController
       @status = @conversation.toggle_status
     end
     assign_conversation if should_assign_conversation?
-    
+
     success_response(
       data: ConversationSerializer.serialize(@conversation, include_messages: false),
       message: 'Conversation status toggled successfully'
     )
+  end
+
+  def return_to_bot
+    @conversation.return_to_bot!
+    success_response(
+      data: ConversationSerializer.serialize(@conversation, include_messages: false),
+      message: 'Conversation returned to bot successfully'
+    )
+  rescue Conversations::InvalidHandoffError => e
+    error_response(ApiErrorCodes::VALIDATION_ERROR, e.message, status: :unprocessable_entity)
   end
 
   def pending_to_open_by_bot?
@@ -387,6 +467,25 @@ class Api::V1::ConversationsController < Api::V1::BaseController
 
   private
 
+  def count_csv_rows(uploaded_file)
+    path = uploaded_file.respond_to?(:path) ? uploaded_file.path : nil
+    return [0, nil] if path.nil?
+
+    cap = CONVERSATIONS_IMPORT_ROW_LIMIT + 1
+    data_rows = 0
+    begin
+      CSV.foreach(path, headers: true) do |_row|
+        data_rows += 1
+        break if data_rows >= cap
+      end
+    rescue CSV::MalformedCSVError => e
+      return [0, e.message]
+    rescue Errno::ENOENT
+      return [0, 'file is not readable']
+    end
+    [data_rows, nil]
+  end
+
   def update_custom_attribute(attribute_key, value, success_message)
     custom_attributes = (@conversation.custom_attributes || {}).merge(attribute_key => value)
 
@@ -403,8 +502,8 @@ class Api::V1::ConversationsController < Api::V1::BaseController
       )
     else
       error_response(
-        code: ApiErrorCodes::VALIDATION_ERROR,
-        message: 'Validation failed',
+        ApiErrorCodes::VALIDATION_ERROR,
+        'Validation failed',
         details: @conversation.errors.full_messages,
         status: :unprocessable_entity
       )

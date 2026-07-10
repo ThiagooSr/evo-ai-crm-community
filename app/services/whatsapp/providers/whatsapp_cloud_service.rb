@@ -34,8 +34,40 @@ module Whatsapp
       end
 
       def sync_templates
-        templates = fetch_whatsapp_templates("#{business_account_path}/message_templates?access_token=#{whatsapp_channel.provider_config['api_key']}")
-        return if templates.blank?
+        # Expected blank-credential path: `after_create :sync_templates` runs
+        # before the Hub `channel_connected` webhook delivers the credentials.
+        # Skip quietly (info, not warn) so the real warn below keeps signal value.
+        waba_id = whatsapp_channel.provider_config['waba_id'].presence ||
+                  whatsapp_channel.provider_config['business_account_id'].presence
+        api_key = whatsapp_channel.provider_config['api_key'].presence
+        channel_token = whatsapp_channel.provider_config.dig('evolution_hub', 'channel_token').presence
+        # In Hub mode the Bearer header carries channel_token (or api_key as fallback);
+        # in non-Hub mode the ?access_token= query param needs api_key. Either way,
+        # at least one of api_key / channel_token must be present.
+        if waba_id.blank? || (api_key.blank? && channel_token.blank?)
+          Rails.logger.info(
+            "WhatsApp Cloud sync_templates: skipping for channel #{whatsapp_channel.id} — " \
+            "credentials not yet available " \
+            "(waba_id_present=#{waba_id.present?} api_key_present=#{api_key.present?} channel_token_present=#{channel_token.present?})"
+          )
+          return
+        end
+
+        # When EvoHub proxy is active, authenticate via Authorization: Bearer header.
+        # Falling back to ?access_token= query param breaks the Hub's proxy auth.
+        url = if MetaBaseUrl.enabled?
+                "#{business_account_path}/message_templates"
+              else
+                "#{business_account_path}/message_templates?access_token=#{api_key}"
+              end
+        templates = fetch_whatsapp_templates(url)
+        if templates.blank?
+          Rails.logger.warn(
+            "WhatsApp Cloud sync_templates: no templates returned for channel #{whatsapp_channel.id} " \
+            "(credentials present — anomaly, expected approved templates from Meta)"
+          )
+          return
+        end
 
         templates.each do |template_data|
           sync_template_to_database(template_data)
@@ -64,8 +96,14 @@ module Whatsapp
       end
 
       def fetch_whatsapp_templates(url)
-        response = HTTParty.get(url)
-        return [] unless response.success?
+        response = HTTParty.get(url, headers: api_headers)
+        unless response.success?
+          Rails.logger.error(
+            "WhatsApp Cloud fetch_whatsapp_templates: non-success response " \
+            "channel=#{whatsapp_channel.id} status=#{response.code} body=#{response.body.to_s.truncate(500)}"
+          )
+          return []
+        end
 
         next_url = next_url(response)
 
@@ -79,11 +117,15 @@ module Whatsapp
       end
 
       def validate_provider_config?
-        url = "#{business_account_path}/message_templates?access_token=#{whatsapp_channel.provider_config['api_key']}"
+        url = if MetaBaseUrl.enabled?
+                "#{business_account_path}/message_templates"
+              else
+                "#{business_account_path}/message_templates?access_token=#{whatsapp_channel.provider_config['api_key']}"
+              end
         Rails.logger.info "WhatsApp Cloud validation URL: #{url}"
         Rails.logger.info "WhatsApp Cloud provider_config: #{whatsapp_channel.provider_config.inspect}"
 
-        response = HTTParty.get(url)
+        response = HTTParty.get(url, headers: api_headers)
 
         Rails.logger.info "WhatsApp Cloud validation response status: #{response.code}"
         Rails.logger.info "WhatsApp Cloud validation response body: #{response.body}"
@@ -273,7 +315,8 @@ module Whatsapp
 
         # Atualizar a lista de templates após criar um novo
         sync_templates
-        whatsapp_channel.message_templates.find { |template| template['name'] == template_data['name'] }
+        whatsapp_channel.message_templates.reload.find_by(name: template_data['name']) ||
+          whatsapp_channel.message_templates.order(created_at: :desc).first
       end
 
       def update_template(template_id, template_data)
