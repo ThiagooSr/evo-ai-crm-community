@@ -43,6 +43,9 @@ Rails.application.routes.draw do
 
       resource :global_config, controller: 'global_config', only: [:show]
       namespace :integrations do
+        # Session-authed availability probe: booleans only (is each provider's OAuth
+        # credential configured?), never the secret itself. See AvailabilityController.
+        get 'availability', to: 'availability#index'
         namespace :google_calendar do
           get 'credentials', to: 'credentials#show'
         end
@@ -394,10 +397,6 @@ Rails.application.routes.draw do
 
       resources :working_hours, only: [:update], controller: 'working_hours'
 
-      scope path: 'twitter', as: 'twitter' do
-        resource :authorization, only: [:create], controller: 'twitter/authorizations'
-      end
-
       scope path: 'microsoft', as: 'microsoft' do
         resource :authorization, only: [:create], controller: 'microsoft/authorizations'
         post :callback, to: 'microsoft/authorizations#callback'
@@ -732,16 +731,16 @@ Rails.application.routes.draw do
   get 'webhooks/instagram', to: 'webhooks/instagram#verify'
   post 'webhooks/instagram', to: 'webhooks/instagram#events'
   post 'webhooks/whatsapp/evolution', to: 'webhooks/whatsapp#process_payload'
+  # EVO-2089: com WEBHOOK_BY_EVENTS=true a Evolution posta cada evento em
+  # .../evolution/<evento> (ex.: messages-upsert). :sub_event (NAO :event — path
+  # param sobrescreveria o `event` do corpo). Mesmo process_payload, que le o evento do corpo.
+  post 'webhooks/whatsapp/evolution/:sub_event', to: 'webhooks/whatsapp#process_payload'
   post 'webhooks/whatsapp/evolution_go', to: 'webhooks/whatsapp#process_evolution_go_payload'
   post 'webhooks/whatsapp/zapi', to: 'webhooks/whatsapp#process_payload'
   post 'webhooks/evolution_hub', to: 'webhooks/evolution_hub#create'
 
   # Bot Runtime postback
   post 'webhooks/bot_runtime/postback/:conversation_display_id', to: 'webhooks/bot_runtime#postback'
-
-  namespace :twitter do
-    resource :callback, only: [:show]
-  end
 
   namespace :linear do
     resource :callback, only: [:show]
@@ -760,9 +759,6 @@ Rails.application.routes.draw do
     resources :delivery_status, only: [:create]
   end
 
-  get 'microsoft/callback', to: 'microsoft/callbacks#show'
-  get 'google/callback', to: 'google/callbacks#show'
-  get 'instagram/callback', to: 'instagram/callbacks#show'
   get 'whatsapp/callback', to: 'whatsapp/callbacks#show'
   get '.well-known/assetlinks.json' => 'android_app#assetlinks'
   get '.well-known/apple-app-site-association' => 'apple_app#site_association'

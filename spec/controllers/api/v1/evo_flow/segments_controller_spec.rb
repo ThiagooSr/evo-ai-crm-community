@@ -27,10 +27,16 @@ RSpec.describe Api::V1::EvoFlow::SegmentsController, type: :controller do
       Current.service_authenticated = false
       Current.user = current_user
       Current.evo_permission_cache = {}
+      # The keys seeded below embed the scope segment of
+      # "user:<id>:<scope>:<permission>". Pin the scope to nil so they keep
+      # matching if an override ever binds one — otherwise the seeded verdict
+      # would be missed, the real resolver would run, and these would fail as an
+      # unexpected client call rather than as the gate regression they guard.
+      allow(EvoExtensionPoints::RuntimeContext).to receive(:current_scope_id).and_return(nil)
     end
 
     it 'returns 403 on #index when the user lacks segments.read (the default agent)' do
-      Current.evo_permission_cache['user:user-1:segments.read'] = false
+      Current.evo_permission_cache['user:user-1::segments.read'] = false
       expect(fake_client).not_to receive(:get)
 
       get :index
@@ -39,7 +45,7 @@ RSpec.describe Api::V1::EvoFlow::SegmentsController, type: :controller do
     end
 
     it 'returns 403 on #destroy when the user lacks segments.delete' do
-      Current.evo_permission_cache['user:user-1:segments.delete'] = false
+      Current.evo_permission_cache['user:user-1::segments.delete'] = false
       expect(fake_client).not_to receive(:delete)
 
       delete :destroy, params: { id: 'seg-1' }
@@ -48,7 +54,7 @@ RSpec.describe Api::V1::EvoFlow::SegmentsController, type: :controller do
     end
 
     it 'allows #index when the user holds segments.read (an administrator)' do
-      Current.evo_permission_cache['user:user-1:segments.read'] = true
+      Current.evo_permission_cache['user:user-1::segments.read'] = true
       allow(fake_client).to receive(:get).and_return({ 'segments' => [] })
 
       get :index
@@ -295,6 +301,32 @@ RSpec.describe Api::V1::EvoFlow::SegmentsController, type: :controller do
 
       expect(response).to have_http_status(404)
       expect(response.parsed_body).to eq('errors' => error_body)
+    end
+  end
+
+  # A deployment that never wired evo-flow up (no shared key, no URL) raises
+  # EvoFlow::ConfigurationError while the client is being CONSTRUCTED — before any
+  # request is issued — so the per-action `rescue EvoFlow::HTTPError` never sees it.
+  # It used to escape as an opaque 500 INTERNAL_ERROR, which reads as a bug in
+  # Segments rather than a missing setting.
+  describe 'evo-flow is not configured' do
+    before do
+      allow(EvoFlow::Client).to receive(:new)
+        .and_raise(EvoFlow::ConfigurationError, 'AUTH_APIKEY_INTEGRATION_LOCAL is not set')
+    end
+
+    it 'answers 503 SERVICE_UNAVAILABLE on #index instead of a 500' do
+      get :index
+
+      expect(response).to have_http_status(:service_unavailable)
+      expect(response.parsed_body.dig('error', 'code')).to eq('SERVICE_UNAVAILABLE')
+    end
+
+    it 'answers 503 on a write action too (#create)' do
+      post :create, params: { name: 'VIPs', definition: definition }
+
+      expect(response).to have_http_status(:service_unavailable)
+      expect(response.parsed_body.dig('error', 'code')).to eq('SERVICE_UNAVAILABLE')
     end
   end
 end
