@@ -1,6 +1,12 @@
 module EvoFlow
   # Raised on any non-2xx evo-flow response, an unparseable body, or a network
   # failure. Mirrors Crm::Hubspot::Api::BaseClient::ApiError (code + response).
+  #
+  # ConfigurationError was moved to its own file (configuration_error.rb) so
+  # Zeitwerk can autoload it by name: SegmentsController rescues it at class-body
+  # level, which resolves during eager-load before this file would define it.
+  # HTTPError stays here — it is only referenced inside method bodies (call-time),
+  # never at eager-load.
   class HTTPError < StandardError
     attr_reader :code, :response
 
@@ -11,19 +17,17 @@ module EvoFlow
     end
   end
 
-  # Raised at construction time for an unusable configuration (missing key,
-  # invalid scheme, or cleartext transport in production). Fails fast instead
-  # of emitting a request that is guaranteed to 401 or that leaks the shared
-  # key over cleartext.
-  class ConfigurationError < StandardError; end
-
   # Instance-based (DI-friendly) authenticated HTTP client for evo-flow.
   # Pattern mirrors app/services/crm/hubspot/api/base_client.rb (HTTParty +
   # custom error + handle_response).
   class Client
     include HTTParty
 
-    DEFAULT_API_URL = 'http://evo-flow:3000/api/v1'.freeze
+    # 3334 is the port evo-flow ships with (its own .env.example and every compose
+    # in the family set PORT=3334). Its code falls back to 3000 only when PORT is
+    # unset, which no deployment of ours does — defaulting to 3000 here just means
+    # a silent timeout against a port nothing listens on.
+    DEFAULT_API_URL = 'http://evo-flow:3334/api/v1'.freeze
     REDACTED_4XX = '[redacted: 4xx body]'.freeze
     MAX_LOGGED_BODY = 500
     VALID_SCHEMES = %w[http https].freeze
