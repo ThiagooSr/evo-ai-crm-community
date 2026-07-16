@@ -201,7 +201,11 @@ RSpec.describe EvoFlow::BackfillContactLabelsWorker, type: :worker do
 
     it 'broadcasts with account_id + sanitized error' do
       job = { 'args' => [nil, {}], 'class' => described_class.name }
-      exception = EvoFlow::HTTPError.new('boom', 500, nil)
+      # A generic StandardError, not EvoFlow::HTTPError: this worker never
+      # calls EvoFlow::Client directly (each row is a fire-and-forget enqueue
+      # to PublishEventWorker), so its retriable failures are ordinary
+      # exceptions, not HTTP-layer ones.
+      exception = StandardError.new('boom')
 
       Wisper.subscribe(listener) do
         described_class.sidekiq_retries_exhausted_block.call(job, exception)
