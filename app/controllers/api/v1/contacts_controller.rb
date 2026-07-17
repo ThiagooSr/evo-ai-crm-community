@@ -432,21 +432,28 @@ class Api::V1::ContactsController < Api::V1::BaseController
     page_size = params[:pageSize]&.to_i || params[:page_size]&.to_i || params[:per_page]&.to_i || 20
     page_size = [page_size.to_i, 1].max
 
-    # Eager load associations on the paginated subset to avoid N+1 queries
+    # Eager-load spec built once, up front. Appending `.includes(...)` onto an
+    # already-*loaded* relation (as this used to do below, conditionally, after
+    # `.map(&:id)` had already forced execution) doesn't extend that load — it
+    # returns a fresh, unexecuted relation, so the whole heavy join (avatar,
+    # conversations -> pipeline_items, labels, companies) silently re-ran a
+    # second time whenever @include_contact_inboxes was true (the default).
+    # Building the full list first keeps this to a single query.
+    includes_spec = [
+      { avatar_attachment: [:blob] },
+      { conversations: { pipeline_items: [:pipeline, :pipeline_stage] } }
+    ]
+    includes_spec << { contact_inboxes: [:inbox] } if @include_contact_inboxes
+
     contacts_with_associations = filtrate(contacts)
                                    .page(page)
                                    .per(page_size)
-                                   .includes([
-                                               { avatar_attachment: [:blob] },
-                                               { conversations: { pipeline_items: [:pipeline, :pipeline_stage] } }
-                                             ])
+                                   .includes(includes_spec)
                                    .preload(:labels, :companies, :contact_companies, :company_contacts)
 
     # Also preload pipeline items directly associated with contacts (only for the current page subset)
     contact_ids = contacts_with_associations.map(&:id)
     PipelineItem.where(contact_id: contact_ids).includes(:pipeline, :pipeline_stage).load
-
-    return contacts_with_associations.includes([{ contact_inboxes: [:inbox] }]) if @include_contact_inboxes
 
     contacts_with_associations
   end
