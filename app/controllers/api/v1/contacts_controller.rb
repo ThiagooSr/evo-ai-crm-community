@@ -87,7 +87,7 @@ class Api::V1::ContactsController < Api::V1::BaseController
     end
 
     ActiveRecord::Base.transaction do
-      import = DataImport.all.create!(data_type: 'contacts')
+      import = DataImport.all.create!(data_type: 'contacts', label: params[:label].presence)
       import.import_file.attach(params[:import_file])
     end
 

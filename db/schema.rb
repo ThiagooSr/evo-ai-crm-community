@@ -564,6 +564,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_26_120000) do
     t.integer "processed_records"
     t.datetime "created_at", precision: nil, null: false
     t.datetime "updated_at", precision: nil, null: false
+    t.string "label"
   end
 
   create_table "data_privacy_consents", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
