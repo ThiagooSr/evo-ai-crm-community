@@ -13,7 +13,14 @@ class DataImport::ContactManager
     contact_params = params.slice(:email, :identifier, :phone_number)
     contact_params[:phone_number] = format_phone_number(contact_params[:phone_number]) if contact_params[:phone_number].present?
     contact_params[:type] = params[:tipo] || params[:type] || 'person'
-    contact ||= Contact.new(contact_params)
+    # Setting id explicitly (instead of relying on the DB's gen_random_uuid()
+    # default) matters here because Contact.import bulk-inserts every row of
+    # a batch with the same column list. If this batch also contains an
+    # already-persisted contact (matched by identity in find_existing_contact),
+    # its non-nil id forces the id column into that shared list, and any new
+    # contact left with a nil id would then be inserted with an explicit
+    # NULL instead of falling back to the default — a NOT NULL violation.
+    contact ||= Contact.new(contact_params.merge(id: SecureRandom.uuid))
     contact
   end
 
