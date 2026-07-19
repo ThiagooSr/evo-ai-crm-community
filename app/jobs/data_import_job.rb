@@ -120,7 +120,7 @@ class DataImportJob < ApplicationJob
 
     csv.each_with_index do |row, index|
       params = row.to_h.with_indifferent_access
-      tipo = params[:tipo] || params[:type] || 'person'
+      tipo = params[:tipo].presence || params[:type].presence || 'person'
 
       Rails.logger.debug "📊 DataImportJob: Row #{index + 1} - tipo=#{tipo}, name=#{params[:nome] || params[:name]}, phone=#{params[:telefone] || params[:phone_number]}"
 

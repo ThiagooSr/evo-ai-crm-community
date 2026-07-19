@@ -12,7 +12,7 @@ class DataImport::ContactManager
     contact = find_existing_contact(params)
     contact_params = params.slice(:email, :identifier, :phone_number)
     contact_params[:phone_number] = format_phone_number(contact_params[:phone_number]) if contact_params[:phone_number].present?
-    contact_params[:type] = params[:tipo] || params[:type] || 'person'
+    contact_params[:type] = params[:tipo].presence || params[:type].presence || 'person'
     # Setting id explicitly (instead of relying on the DB's gen_random_uuid()
     # default) matters here because Contact.import bulk-inserts every row of
     # a batch with the same column list. If this batch also contains an
@@ -82,7 +82,7 @@ class DataImport::ContactManager
 
   def update_contact_attributes(params, contact)
     # Tipo de contato
-    contact.type = params[:tipo] || params[:type] || 'person'
+    contact.type = params[:tipo].presence || params[:type].presence || 'person'
 
     # Campos base
     contact.name = build_name(params)
@@ -111,8 +111,10 @@ class DataImport::ContactManager
   end
 
   def build_name(params)
+    tipo = params[:tipo].presence || params[:type].presence || 'person'
+
     # Para pessoa física: primeiro_nome
-    if params[:tipo] == 'person' || params[:type] == 'person'
+    if tipo == 'person'
       first_name = params[:primeiro_nome] || params[:first_name] || params[:nome] || params[:name]
       last_name = params[:sobrenome] || params[:last_name]
       return "#{first_name} #{last_name}".strip if first_name.present?
