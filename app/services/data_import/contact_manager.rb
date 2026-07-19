@@ -47,9 +47,10 @@ class DataImport::ContactManager
   end
 
   def find_contact_by_phone_number(params)
-    return unless params[:phone_number]
+    raw = params[:telefone] || params[:phone_number]
+    return unless raw
 
-    Contact.find_by(phone_number: format_phone_number(params[:phone_number]))
+    Contact.find_by(phone_number: format_phone_number(raw))
   end
 
   def find_contact_by_tax_id(params)
@@ -59,11 +60,15 @@ class DataImport::ContactManager
     Contact.find_by(tax_id: tax_id)
   end
 
+  # Delegates to the same normalizer Contact#prepare_phone_number_attribute uses
+  # before persisting. Using a different format here (e.g. a naive digit-strip)
+  # means find_contact_by_phone_number can miss an existing row whose phone was
+  # already normalized on a previous save (e.g. BR's nono digito), creating a
+  # duplicate contact instead of matching/merging into the existing one.
   def format_phone_number(phone_number)
     return unless phone_number.present?
 
-    cleaned = phone_number.to_s.gsub(/\D/, '')
-    cleaned.start_with?('+') ? cleaned : "+#{cleaned}"
+    Whatsapp::PhoneNumberNormalizer.to_e164(phone_number)
   end
 
   def sanitize_tax_id(tax_id)

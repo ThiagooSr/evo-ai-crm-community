@@ -131,9 +131,28 @@ RSpec.describe DataImportJob, type: :job do
 
       described_class.new.perform(data_import)
 
-      contact = Contact.find_by(phone_number: '+5593991640367')
+      # DDD 93 (AP) strips the nono digito per Whatsapp::PhoneNumberNormalizer's
+      # BR rules (Contact#prepare_phone_number_attribute normalizes on save).
+      contact = Contact.find_by(phone_number: '+559391640367')
       expect(contact).to be_present
       expect(contact.name).to eq('Vanderlene do Nascimento Carlos')
+    end
+
+    it 'matches an existing contact whose stored phone was already nono-digito-normalized, instead of duplicating it' do
+      existing = Contact.create!(name: 'Vanderlene', phone_number: '+5593991640367')
+      expect(existing.reload.phone_number).to eq('+559391640367')
+
+      csv = [
+        'tipo;nome;primeiro_nome;sobrenome;email;telefone',
+        ';Vanderlene do Nascimento Carlos;;;;5593991640367'
+      ].join("\n")
+      data_import = DataImport.create!(data_type: 'contacts')
+      data_import.import_file.attach(io: StringIO.new(csv), filename: 'contacts.csv', content_type: 'text/csv')
+
+      described_class.new.perform(data_import)
+
+      expect(Contact.where(phone_number: '+559391640367').count).to eq(1)
+      expect(existing.reload.name).to eq('Vanderlene do Nascimento Carlos')
     end
   end
 end
