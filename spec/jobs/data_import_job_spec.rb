@@ -119,4 +119,21 @@ RSpec.describe DataImportJob, type: :job do
       expect(events).to eq(%w[suporte suporte])
     end
   end
+
+  describe 'contacts import — semicolon-delimited CSV (Excel pt-BR export)' do
+    it 'parses name/phone correctly instead of collapsing the row into one blank column' do
+      csv = [
+        'tipo;nome;primeiro_nome;sobrenome;email;telefone',
+        ';Vanderlene do Nascimento Carlos;;;;5593991640367'
+      ].join("\n")
+      data_import = DataImport.create!(data_type: 'contacts')
+      data_import.import_file.attach(io: StringIO.new(csv), filename: 'contacts.csv', content_type: 'text/csv')
+
+      described_class.new.perform(data_import)
+
+      contact = Contact.find_by(phone_number: '+5593991640367')
+      expect(contact).to be_present
+      expect(contact.name).to eq('Vanderlene do Nascimento Carlos')
+    end
+  end
 end

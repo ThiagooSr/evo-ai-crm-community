@@ -115,7 +115,7 @@ class DataImportJob < ApplicationJob
     # Ensure that the data is valid UTF-8, preserving valid characters
     clean_data = utf8_data.valid_encoding? ? utf8_data : utf8_data.encode('UTF-16le', invalid: :replace, replace: '').encode('UTF-8')
 
-    csv = CSV.parse(clean_data, headers: true)
+    csv = CSV.parse(clean_data, headers: true, col_sep: detect_csv_col_sep(clean_data))
     Rails.logger.info "📊 DataImportJob: Parsed CSV, total rows: #{csv.count}"
 
     csv.each_with_index do |row, index|
@@ -146,6 +146,15 @@ class DataImportJob < ApplicationJob
     end
 
     [person_rows, company_rows, rejected_contacts]
+  end
+
+  # Excel salva CSV com ";" quando o locale usa "," como separador decimal
+  # (pt-BR e outros). Sem isso, um arquivo ponto-e-vírgula vira uma unica
+  # coluna gigante, todo mundo fica com name/phone_number em branco, e o
+  # import cria contatos fantasma silenciosamente em vez de rejeitar a linha.
+  def detect_csv_col_sep(data)
+    header_line = data.each_line.first.to_s
+    header_line.count(';') > header_line.count(',') ? ';' : ','
   end
 
   def append_rejected_contact(row, contact, rejected_contacts)
