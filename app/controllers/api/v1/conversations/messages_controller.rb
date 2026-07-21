@@ -1,7 +1,7 @@
 class Api::V1::Conversations::MessagesController < Api::V1::Conversations::BaseController
   require_permissions({
     index: 'conversations.read',
-    show: 'conversations.read',
+    resolve: 'conversations.read',
     create: 'conversations.update',
     update: 'conversations.update',
     destroy: 'conversations.update',
@@ -23,12 +23,15 @@ class Api::V1::Conversations::MessagesController < Api::V1::Conversations::BaseC
   # reply preview pointing at a message outside the currently paginated
   # window) without paging through the whole conversation to find it.
   #
-  # :id accepts either our internal UUID or the provider's source_id: an
+  # ?ref= accepts either our internal UUID or the provider's source_id: an
   # inbound WhatsApp reply quotes the OTHER party's WhatsApp message id
   # (content_attributes.in_reply_to_external_id), which is never our
-  # internal message id.
-  def show
-    @message = find_by_id_or_source_id(permitted_params[:id])
+  # internal message id. A query param (not a :id path segment) on purpose -
+  # WhatsApp message ids are base64-ish and can contain "/", which a path
+  # segment can't carry safely (nginx/Rails routing treats it as a
+  # separator even percent-encoded), where a query string value is fine.
+  def resolve
+    @message = find_by_id_or_source_id(params[:ref])
     raise ActiveRecord::RecordNotFound unless @message
 
     success_response(

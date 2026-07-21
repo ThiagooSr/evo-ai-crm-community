@@ -119,9 +119,12 @@ Rails.application.routes.draw do
           get :unread_count
           post :import
         end
-        resources :messages, only: [:index, :show, :create, :destroy, :update], controller: 'conversations/messages' do
+        resources :messages, only: [:index, :create, :destroy, :update], controller: 'conversations/messages' do
           member do
             post :retry
+          end
+          collection do
+            get :resolve
           end
         end
         resources :assignments, only: [:create], controller: 'conversations/assignments'

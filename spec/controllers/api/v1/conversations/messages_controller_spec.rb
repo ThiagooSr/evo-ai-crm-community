@@ -88,7 +88,7 @@ RSpec.describe Api::V1::Conversations::MessagesController, type: :controller do
   # Lets a reply preview resolve a message outside its currently loaded page
   # (e.g. "quoted message" pointing far back in a long conversation) with a
   # direct lookup instead of paging through the whole history to find it.
-  describe '#show' do
+  describe '#resolve' do
     let(:uuid) { '550e8400-e29b-41d4-a716-446655440000' }
     let(:messages_relation) { instance_double(ActiveRecord::Relation) }
 
@@ -98,9 +98,7 @@ RSpec.describe Api::V1::Conversations::MessagesController, type: :controller do
 
     context 'given our internal UUID' do
       before do
-        allow(controller).to receive(:permitted_params).and_return(
-          ActionController::Parameters.new(id: uuid).permit(:id, :status, :external_error)
-        )
+        allow(controller).to receive(:params).and_return(ActionController::Parameters.new(ref: uuid))
       end
 
       it 'looks it up by id and serializes the message' do
@@ -114,7 +112,7 @@ RSpec.describe Api::V1::Conversations::MessagesController, type: :controller do
           message: 'Message retrieved successfully'
         )
 
-        controller.send(:show)
+        controller.send(:resolve)
       end
 
       it 'returns 404 when no message with that id exists in this conversation' do
@@ -126,21 +124,22 @@ RSpec.describe Api::V1::Conversations::MessagesController, type: :controller do
           status: :not_found
         )
 
-        controller.send(:show)
+        controller.send(:resolve)
       end
     end
 
     # An inbound WhatsApp reply quotes the OTHER party's WhatsApp message id
     # (content_attributes.in_reply_to_external_id) - never our internal id -
-    # so :id must also resolve against source_id, or these replies can never
-    # be resolved/jumped to at all (the bug this endpoint exists to fix).
+    # so ?ref= must also resolve against source_id, or these replies can
+    # never be resolved/jumped to at all (the bug this endpoint exists to
+    # fix). ?ref= (not a :id path segment) because these ids are base64-ish
+    # and can contain "/", which breaks as a path segment even when
+    # percent-encoded.
     context 'given a WhatsApp source_id (not a UUID)' do
       let(:source_id) { 'wamid.HBgLNTU5MTIzNDU2Nzg5FQIAERgSQUJDRA==' }
 
       before do
-        allow(controller).to receive(:permitted_params).and_return(
-          ActionController::Parameters.new(id: source_id).permit(:id, :status, :external_error)
-        )
+        allow(controller).to receive(:params).and_return(ActionController::Parameters.new(ref: source_id))
       end
 
       it 'looks it up by source_id instead of id (never queries the uuid column with it)' do
@@ -150,7 +149,7 @@ RSpec.describe Api::V1::Conversations::MessagesController, type: :controller do
 
         expect(controller).to receive(:success_response)
 
-        controller.send(:show)
+        controller.send(:resolve)
       end
 
       it 'returns 404 when no message with that source_id exists in this conversation' do
@@ -162,7 +161,7 @@ RSpec.describe Api::V1::Conversations::MessagesController, type: :controller do
           status: :not_found
         )
 
-        controller.send(:show)
+        controller.send(:resolve)
       end
     end
   end
