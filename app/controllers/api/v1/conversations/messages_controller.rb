@@ -1,6 +1,7 @@
 class Api::V1::Conversations::MessagesController < Api::V1::Conversations::BaseController
   require_permissions({
     index: 'conversations.read',
+    show: 'conversations.read',
     create: 'conversations.update',
     update: 'conversations.update',
     destroy: 'conversations.update',
@@ -15,6 +16,24 @@ class Api::V1::Conversations::MessagesController < Api::V1::Conversations::BaseC
     success_response(
       data: MessageSerializer.serialize_collection(@messages, include_attachments: true, include_sender: true),
       message: 'Messages retrieved successfully'
+    )
+  end
+
+  # Lets a client resolve a single message it doesn't have loaded (e.g. a
+  # reply preview pointing at a message outside the currently paginated
+  # window) without paging through the whole conversation to find it.
+  def show
+    @message = message
+
+    success_response(
+      data: MessageSerializer.serialize(@message, include_attachments: true, include_sender: true),
+      message: 'Message retrieved successfully'
+    )
+  rescue ActiveRecord::RecordNotFound
+    error_response(
+      ApiErrorCodes::RESOURCE_NOT_FOUND,
+      'Message not found',
+      status: :not_found
     )
   end
 

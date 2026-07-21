@@ -84,4 +84,41 @@ RSpec.describe Api::V1::Conversations::MessagesController, type: :controller do
       controller.send(:retry)
     end
   end
+
+  # Lets a reply preview resolve a message outside its currently loaded page
+  # (e.g. "quoted message" pointing far back in a long conversation) with a
+  # direct lookup instead of paging through the whole history to find it.
+  describe '#show' do
+    before do
+      allow(controller).to receive(:permitted_params).and_return(
+        ActionController::Parameters.new(id: 7).permit(:id, :status, :external_error)
+      )
+    end
+
+    it 'serializes and returns the message' do
+      allow(MessageSerializer).to receive(:serialize).with(
+        message_record, include_attachments: true, include_sender: true
+      ).and_return({ id: 7 })
+
+      expect(controller).to receive(:success_response).with(
+        data: { id: 7 },
+        message: 'Message retrieved successfully'
+      )
+
+      controller.send(:show)
+    end
+
+    it 'returns 404 when the message does not belong to this conversation' do
+      allow(conversation).to receive_message_chain(:messages, :find)
+        .and_raise(ActiveRecord::RecordNotFound)
+
+      expect(controller).to receive(:error_response).with(
+        ApiErrorCodes::RESOURCE_NOT_FOUND,
+        'Message not found',
+        status: :not_found
+      )
+
+      controller.send(:show)
+    end
+  end
 end
