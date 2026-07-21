@@ -22,8 +22,14 @@ class Api::V1::Conversations::MessagesController < Api::V1::Conversations::BaseC
   # Lets a client resolve a single message it doesn't have loaded (e.g. a
   # reply preview pointing at a message outside the currently paginated
   # window) without paging through the whole conversation to find it.
+  #
+  # :id accepts either our internal UUID or the provider's source_id: an
+  # inbound WhatsApp reply quotes the OTHER party's WhatsApp message id
+  # (content_attributes.in_reply_to_external_id), which is never our
+  # internal message id.
   def show
-    @message = message
+    @message = find_by_id_or_source_id(permitted_params[:id])
+    raise ActiveRecord::RecordNotFound unless @message
 
     success_response(
       data: MessageSerializer.serialize(@message, include_attachments: true, include_sender: true),
@@ -147,6 +153,17 @@ class Api::V1::Conversations::MessagesController < Api::V1::Conversations::BaseC
 
   def message
     @message ||= @conversation.messages.find(permitted_params[:id])
+  end
+
+  UUID_FORMAT = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
+
+  # #show only: id/source_id can't be OR'd in one query - the id column is
+  # `uuid` typed, and Postgres raises (not "no match") when it's compared
+  # against a non-UUID string like a WhatsApp source_id ("wamid.HBg...").
+  def find_by_id_or_source_id(id)
+    return @conversation.messages.find_by(id: id) if id.to_s.match?(UUID_FORMAT)
+
+    @conversation.messages.find_by(source_id: id)
   end
 
   def message_finder
