@@ -77,6 +77,11 @@ class Messages::MessageBuilder
                              else
                                file_type(uploaded_attachment&.content_type)
                              end
+      # attachment.file already has the original filename at this point (Rails pulls it
+      # from the multipart upload's original_filename, or from the referenced blob when
+      # uploaded_attachment is a direct-upload signed ID) — fallback_title is what the
+      # chat UI shows instead of a generic "Arquivo" label.
+      attachment.fallback_title = attachment.file.filename.to_s if attachment.file.attached?
     end
   end
 
