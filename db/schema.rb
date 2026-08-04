@@ -1377,6 +1377,10 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_26_120000) do
     t.datetime "created_at", precision: nil, null: false
     t.datetime "updated_at", precision: nil, null: false
     t.boolean "open_all_day", default: false
+    t.integer "open_hour_2"
+    t.integer "open_minutes_2"
+    t.integer "close_hour_2"
+    t.integer "close_minutes_2"
     t.index ["inbox_id"], name: "index_working_hours_on_inbox_id"
   end
 
