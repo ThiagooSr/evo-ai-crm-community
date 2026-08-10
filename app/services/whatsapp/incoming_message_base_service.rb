@@ -29,12 +29,21 @@ class Whatsapp::IncomingMessageBaseService
     return if find_message_by_source_id(@processed_params[:messages].first[:id]) || message_under_process?
 
     cache_message_source_id_in_redis
-    set_contact
-    return unless @contact
+    begin
+      set_contact
+      return unless @contact
 
-    set_conversation
-    create_messages
-    clear_message_source_id_from_redis
+      set_conversation
+      create_messages
+    ensure
+      # Always release the guard, success or failure. It used to be cleared only on
+      # the happy path, so any exception here (e.g. a ContactInbox race — see
+      # update_bsuid_fields) left it stuck for its full TTL (1 day). The next
+      # Sidekiq retry, or a genuine webhook re-delivery for the same message, would
+      # then see "under process" and silently give up with no error logged anywhere
+      # — the message was gone for good instead of just retried.
+      clear_message_source_id_from_redis
+    end
   end
 
   def process_statuses
@@ -143,6 +152,18 @@ class Whatsapp::IncomingMessageBaseService
     attrs[:bsuid] = bsuid if bsuid.present? && contact_inbox.bsuid != bsuid
     attrs[:whatsapp_username] = username if username.present? && contact_inbox.whatsapp_username != username
     contact_inbox.update!(attrs) if attrs.present?
+  rescue ActiveRecord::RecordNotUnique => e
+    # Two webhook events for the same brand-new contact (e.g. two messages sent
+    # seconds apart before any contact_inbox existed yet) can each reach this call
+    # concurrently. Whichever job loses the race hits index_contact_inboxes_on_inbox_id_and_bsuid
+    # — but the bsuid is already recorded correctly by the winner, so this is a
+    # harmless duplicate write, not a real failure. Matches the same
+    # rescue-and-recover pattern ContactInboxWithContactBuilder#perform already
+    # uses for the analogous race on contact_inbox creation itself.
+    Rails.logger.warn(
+      "WhatsApp: bsuid=#{bsuid} already claimed by another contact_inbox (concurrent webhook race) - " \
+      "skipping duplicate update on contact_inbox=#{contact_inbox.id}: #{e.message}"
+    )
   end
 
   def set_conversation
