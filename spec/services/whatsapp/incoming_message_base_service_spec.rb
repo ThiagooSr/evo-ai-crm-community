@@ -99,4 +99,50 @@ RSpec.describe Whatsapp::IncomingMessageBaseService do
       service.send(:update_message_with_status, already_delivered, { status: 'delivered', id: 'wamid.xxx' })
     end
   end
+
+  # Regression coverage for the incident where two webhooks for a brand-new
+  # contact's first messages (seconds apart) raced on
+  # index_contact_inboxes_on_inbox_id_and_bsuid: the loser's exception left the
+  # Redis "message under process" guard stuck for its full 1-day TTL, so the
+  # Sidekiq retry (and any real re-delivery from Meta) silently gave up with no
+  # error anywhere — the message was gone for good instead of just retried.
+  describe '#update_bsuid_fields' do
+    it 'rescues a concurrent-webhook RecordNotUnique race instead of raising' do
+      contact_inbox = instance_double(ContactInbox, id: 7, bsuid: nil, whatsapp_username: nil)
+      allow(contact_inbox).to receive(:update!).and_raise(
+        ActiveRecord::RecordNotUnique.new(
+          'PG::UniqueViolation: duplicate key value violates unique constraint ' \
+          '"index_contact_inboxes_on_inbox_id_and_bsuid"'
+        )
+      )
+
+      expect(Rails.logger).to receive(:warn).with(/bsuid=abc123/)
+      expect { service.send(:update_bsuid_fields, contact_inbox, 'abc123', nil) }.not_to raise_error
+    end
+  end
+
+  describe '#process_messages — dedup guard release' do
+    before do
+      service.processed_params = { messages: [{ id: 'wamid.race', type: 'text' }] }
+      allow(service).to receive(:find_message_by_source_id).and_return(nil)
+      allow(service).to receive(:message_under_process?).and_return(false)
+      allow(service).to receive(:cache_message_source_id_in_redis)
+    end
+
+    it 'clears the guard even when set_contact raises mid-flow' do
+      allow(service).to receive(:set_contact).and_raise(ActiveRecord::RecordNotUnique.new('boom'))
+
+      expect(service).to receive(:clear_message_source_id_from_redis)
+      expect { service.send(:process_messages) }.to raise_error(ActiveRecord::RecordNotUnique)
+    end
+
+    it 'still clears the guard on the happy path' do
+      allow(service).to receive(:set_contact) { service.instance_variable_set(:@contact, instance_double(Contact)) }
+      allow(service).to receive(:set_conversation)
+      allow(service).to receive(:create_messages)
+
+      expect(service).to receive(:clear_message_source_id_from_redis)
+      service.send(:process_messages)
+    end
+  end
 end
