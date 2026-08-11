@@ -50,7 +50,7 @@ class Api::V1::ProceduresController < Api::V1::BaseController
                 .includes(:procedure_visibilities, attachments: { file_attachment: :blob })
                 .find_by(public_token: params[:token])
 
-    unless procedure&.customer_shareable? && procedure.procedure_visibilities.any? { |visibility| visibility.scope_type == 'public_link' }
+    unless procedure&.procedure_visibilities&.any? { |visibility| visibility.scope_type == 'public_link' }
       return error_response(ApiErrorCodes::RESOURCE_NOT_FOUND, 'Procedure not found', status: :not_found)
     end
 
