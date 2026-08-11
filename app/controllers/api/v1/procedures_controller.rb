@@ -493,14 +493,21 @@ class Api::V1::ProceduresController < Api::V1::BaseController
   end
 
   def attach_from_file(file)
-    attachment = @procedure.attachments.build(file_type: determine_file_type(file.content_type))
+    attachment = @procedure.attachments.build(
+      file_type: determine_file_type(file.content_type),
+      fallback_title: file.original_filename
+    )
     attachment.file.attach(io: file, filename: file.original_filename, content_type: file.content_type)
     attachment.save!
   end
 
   def attach_from_signed_id(signed_id)
-    attachment = @procedure.attachments.build(file_type: file_type_by_signed_id(signed_id))
-    attachment.file.attach(ActiveStorage::Blob.find_signed(signed_id))
+    blob = ActiveStorage::Blob.find_signed(signed_id)
+    attachment = @procedure.attachments.build(
+      file_type: file_type_by_signed_id(signed_id),
+      fallback_title: blob&.filename&.to_s
+    )
+    attachment.file.attach(blob)
     attachment.save!
   end
 
