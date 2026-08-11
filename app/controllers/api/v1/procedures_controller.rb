@@ -31,7 +31,7 @@ class Api::V1::ProceduresController < Api::V1::BaseController
     apply_pagination
 
     paginated_response(
-      data: ProcedureSerializer.serialize_collection(@procedures),
+      data: ProcedureSerializer.serialize_collection(@procedures, include_public_token: can_share_public_link?),
       collection: @procedures,
       message: 'Procedures retrieved successfully'
     )
