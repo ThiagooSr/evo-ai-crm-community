@@ -230,6 +230,15 @@
 - pipelines.delete
 - pipelines.read
 - pipelines.update
+- procedures.create
+- procedures.delete
+- procedures.manage_visibility
+- procedures.publish
+- procedures.read
+- procedures.send_to_customer
+- procedures.share
+- procedures.update
+- procedures.write
 - products.create
 - products.delete
 - products.read
