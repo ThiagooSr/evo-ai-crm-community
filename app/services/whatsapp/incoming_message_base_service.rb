@@ -230,7 +230,8 @@ class Whatsapp::IncomingMessageBaseService
     phones.each do |phone|
       @message.attachments.new(
         file_type: file_content_type(message_type),
-        fallback_title: phone[:phone].to_s
+        fallback_title: phone[:phone].to_s,
+        meta: { display_name: contact.dig(:name, :formatted_name) }
       )
     end
   end

@@ -145,4 +145,63 @@ RSpec.describe Whatsapp::IncomingMessageBaseService do
       service.send(:process_messages)
     end
   end
+
+  # Regression coverage for the "contact card shows no name" bug: attach_contact
+  # built the Attachment without a `meta[:display_name]`, so channels that share
+  # this base implementation (WhatsApp Cloud API, Baileys, Evolution Go) rendered
+  # a generic "shared contact" fallback in the frontend instead of the real name,
+  # even though the vCard carried a name.formatted_name field all along.
+  describe '#attach_contact' do
+    let(:attachments_relation) { instance_double('AttachmentsRelation') }
+    let(:contact_message) { instance_double(Message, attachments: attachments_relation) }
+
+    before do
+      service.processed_params = { messages: [{ type: 'contacts' }] }
+      service.instance_variable_set(:@message, contact_message)
+    end
+
+    it 'builds one attachment with display_name from the vCard name and the phone as fallback_title' do
+      contact = { name: { formatted_name: 'Fernanda Martins' }, phones: [{ phone: '+55 11 99999-8888' }] }
+
+      expect(attachments_relation).to receive(:new).with(
+        file_type: :contact,
+        fallback_title: '+55 11 99999-8888',
+        meta: { display_name: 'Fernanda Martins' }
+      )
+
+      service.send(:attach_contact, contact)
+    end
+
+    it 'creates one attachment per phone for a contact with multiple numbers' do
+      contact = {
+        name: { formatted_name: 'Multi Phone' },
+        phones: [{ phone: '+5511111111111' }, { phone: '+5511222222222' }]
+      }
+
+      expect(attachments_relation).to receive(:new).with(hash_including(fallback_title: '+5511111111111'))
+      expect(attachments_relation).to receive(:new).with(hash_including(fallback_title: '+5511222222222'))
+
+      service.send(:attach_contact, contact)
+    end
+
+    it 'falls back to the placeholder phone when the vCard has no phones' do
+      contact = { name: { formatted_name: 'No Phone' }, phones: [] }
+
+      expect(attachments_relation).to receive(:new).with(
+        file_type: :contact,
+        fallback_title: 'Phone number is not available',
+        meta: { display_name: 'No Phone' }
+      )
+
+      service.send(:attach_contact, contact)
+    end
+
+    it 'leaves display_name nil when the vCard has no name field' do
+      contact = { phones: [{ phone: '+5511333333333' }] }
+
+      expect(attachments_relation).to receive(:new).with(hash_including(meta: { display_name: nil }))
+
+      service.send(:attach_contact, contact)
+    end
+  end
 end
