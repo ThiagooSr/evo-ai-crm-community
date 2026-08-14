@@ -39,7 +39,35 @@ RSpec.describe Whatsapp::Providers::WhatsappCloudService do
   end
 
   describe '#send_audio_via_media_upload' do
-    it 'uploads original file without invoking audio conversion service' do
+    let(:converted_path) { '/tmp/voice.ogg' }
+
+    before do
+      allow(File).to receive(:exist?).with(converted_path).and_return(true)
+    end
+
+    it 'transcodes to OGG/Opus and uploads the converted file when the mime type is not accepted' do
+      success_response = instance_double(
+        HTTParty::Response,
+        success?: true,
+        parsed_response: { 'messages' => [{ 'id' => 'wamid.123' }], 'error' => nil }
+      )
+
+      expect(Whatsapp::AudioConverterService).to receive(:convert_to_ogg_opus).with(temp_file.path).and_return(converted_path)
+      expect(service).to receive(:upload_media_to_whatsapp).with(converted_path, 'audio/ogg').and_return('media_123')
+      allow(HTTParty).to receive(:post).and_return(success_response)
+
+      service.send(:send_audio_via_media_upload, '5511999999999', message, attachment)
+
+      expect(File).to have_received(:delete).with(temp_file.path)
+      expect(File).to have_received(:delete).with(converted_path)
+      expect(message.status).to be_nil
+      expect(message.external_error).to be_nil
+    end
+
+    it 'skips conversion and uploads the original file when the mime type is already accepted' do
+      accepted_blob = instance_double('ActiveStorage::Blob', content_type: 'audio/ogg')
+      accepted_file = instance_double('AttachmentFile', blob: accepted_blob, filename: 'voice.ogg')
+      accepted_attachment = instance_double('Attachment', file: accepted_file)
       success_response = instance_double(
         HTTParty::Response,
         success?: true,
@@ -47,14 +75,29 @@ RSpec.describe Whatsapp::Providers::WhatsappCloudService do
       )
 
       expect(Whatsapp::AudioConverterService).not_to receive(:convert_to_ogg_opus)
-      expect(service).to receive(:upload_media_to_whatsapp).with(temp_file.path, 'audio/webm').and_return('media_123')
+      expect(service).to receive(:upload_media_to_whatsapp).with(temp_file.path, 'audio/ogg').and_return('media_123')
       allow(HTTParty).to receive(:post).and_return(success_response)
 
-      service.send(:send_audio_via_media_upload, '5511999999999', message, attachment)
+      service.send(:send_audio_via_media_upload, '5511999999999', message, accepted_attachment)
 
       expect(File).to have_received(:delete).with(temp_file.path)
-      expect(message.status).to be_nil
-      expect(message.external_error).to be_nil
+    end
+
+    it 'routes conversion failures to Messages::StatusUpdateService and still cleans up the original temp file' do
+      expect(Whatsapp::AudioConverterService).to receive(:convert_to_ogg_opus)
+        .with(temp_file.path)
+        .and_raise(Whatsapp::AudioConverterService::ConversionError, 'FFmpeg conversion failed: boom')
+      expect(HTTParty).not_to receive(:post)
+
+      status_service = instance_double(Messages::StatusUpdateService, perform: true)
+      expect(Messages::StatusUpdateService).to receive(:new)
+        .with(message, 'failed', a_string_including('WHATSAPP_CLOUD_AUDIO_UPLOAD_FAILED', 'FFmpeg conversion failed: boom'))
+        .and_return(status_service)
+
+      result = service.send(:send_audio_via_media_upload, '5511999999999', message, attachment)
+
+      expect(result).to be_nil
+      expect(File).to have_received(:delete).with(temp_file.path)
     end
 
     # EVO-1460 follow-up: handle_error and mark_audio_upload_failed used to write
@@ -71,7 +114,8 @@ RSpec.describe Whatsapp::Providers::WhatsappCloudService do
         body: '{"error":{"message":"Invalid audio payload"}}'
       )
 
-      expect(service).to receive(:upload_media_to_whatsapp).with(temp_file.path, 'audio/webm').and_return('media_123')
+      allow(Whatsapp::AudioConverterService).to receive(:convert_to_ogg_opus).with(temp_file.path).and_return(converted_path)
+      expect(service).to receive(:upload_media_to_whatsapp).with(converted_path, 'audio/ogg').and_return('media_123')
       allow(HTTParty).to receive(:post).and_return(failed_message_response)
 
       status_service = instance_double(Messages::StatusUpdateService, perform: true)
@@ -85,6 +129,7 @@ RSpec.describe Whatsapp::Providers::WhatsappCloudService do
     end
 
     it 'routes audio upload failure to Messages::StatusUpdateService (mark_audio_upload_failed funnel)' do
+      allow(Whatsapp::AudioConverterService).to receive(:convert_to_ogg_opus).and_return(converted_path)
       allow(service).to receive(:upload_media_to_whatsapp).and_raise(
         described_class::AudioUploadError,
         'WHATSAPP_CLOUD_AUDIO_UPLOAD_FAILED - WhatsApp API Error (131053) - Unsupported media type'
@@ -102,7 +147,7 @@ RSpec.describe Whatsapp::Providers::WhatsappCloudService do
       expect(File).to have_received(:delete).with(temp_file.path)
     end
 
-    it 'falls back mime type to application/octet-stream when blob content_type is absent' do
+    it 'falls back mime type to application/octet-stream when blob content_type is absent, then transcodes it' do
       nil_mime_blob = instance_double('ActiveStorage::Blob', content_type: nil)
       nil_mime_file = instance_double('AttachmentFile', blob: nil_mime_blob, filename: 'voice.bin')
       nil_mime_attachment = instance_double('Attachment', file: nil_mime_file)
@@ -112,7 +157,8 @@ RSpec.describe Whatsapp::Providers::WhatsappCloudService do
         parsed_response: { 'messages' => [{ 'id' => 'wamid.123' }], 'error' => nil }
       )
 
-      expect(service).to receive(:upload_media_to_whatsapp).with(temp_file.path, 'application/octet-stream').and_return('media_123')
+      expect(Whatsapp::AudioConverterService).to receive(:convert_to_ogg_opus).with(temp_file.path).and_return(converted_path)
+      expect(service).to receive(:upload_media_to_whatsapp).with(converted_path, 'audio/ogg').and_return('media_123')
       allow(HTTParty).to receive(:post).and_return(success_response)
 
       service.send(:send_audio_via_media_upload, '5511999999999', message, nil_mime_attachment)

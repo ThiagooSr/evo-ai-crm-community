@@ -5,7 +5,12 @@ module Whatsapp
     class WhatsappCloudService < Whatsapp::Providers::BaseService
       include Whatsapp::Providers::Concerns::TemplateSync
       class AudioUploadError < StandardError; end
-      
+
+      # WhatsApp Cloud API rejects any audio Content-Type outside this list (Graph API
+      # error 100). Browsers commonly record audio/webm, which isn't accepted, so
+      # send_audio_via_media_upload transcodes anything outside this set.
+      CLOUD_ACCEPTED_AUDIO_MIME_TYPES = %w[audio/aac audio/mp4 audio/mpeg audio/amr audio/ogg audio/opus].freeze
+
       def send_message(phone_number, message)
         @message = message
 
@@ -389,10 +394,13 @@ module Whatsapp
 
         # Download attachment to temporary file
         temp_file = download_attachment_to_temp(attachment)
+        converted_path = nil
 
         begin
-          # Upload original audio to WhatsApp Media API (no backend transcoding)
-          media_id = upload_media_to_whatsapp(temp_file.path, mime_type)
+          upload_path, upload_mime_type, converted_path = resolve_audio_upload_path(temp_file.path, mime_type, message.id)
+
+          # Upload (possibly transcoded) audio to WhatsApp Media API
+          media_id = upload_media_to_whatsapp(upload_path, upload_mime_type)
           return if media_id.blank?
 
           # Send message with media_id and voice: true
@@ -412,16 +420,35 @@ module Whatsapp
           )
 
           process_response(response)
+        rescue Whatsapp::AudioConverterService::ConversionError => e
+          mark_audio_upload_failed(message, "WHATSAPP_CLOUD_AUDIO_UPLOAD_FAILED - audio conversion error: #{e.message}")
+          nil
         rescue AudioUploadError => e
           mark_audio_upload_failed(message, e.message)
           nil
         ensure
-          # Clean up temporary file
+          # Clean up temporary files (original download and, if it happened, the converted copy)
           File.delete(temp_file.path) if temp_file && File.exist?(temp_file.path)
+          File.delete(converted_path) if converted_path && File.exist?(converted_path)
 
           duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000).round
           Rails.logger.info("WhatsApp Cloud audio send finished message_id=#{message.id} duration_ms=#{duration_ms}")
         end
+      end
+
+      # Transcodes to OGG/Opus when the mime type isn't one WhatsApp Cloud API accepts
+      # (Graph API error 100 otherwise — see CLOUD_ACCEPTED_AUDIO_MIME_TYPES).
+      # Returns [upload_path, upload_mime_type, converted_path]; converted_path is nil
+      # when no conversion happened, so callers know whether there's an extra temp
+      # file to clean up.
+      def resolve_audio_upload_path(path, mime_type, message_id)
+        return [path, mime_type, nil] if CLOUD_ACCEPTED_AUDIO_MIME_TYPES.include?(mime_type)
+
+        Rails.logger.info(
+          "Transcoding audio for message #{message_id}: #{mime_type} is not accepted by WhatsApp Cloud API"
+        )
+        converted_path = Whatsapp::AudioConverterService.convert_to_ogg_opus(path)
+        [converted_path, 'audio/ogg', converted_path]
       end
 
       # Send non-audio attachments via link (existing behavior)
