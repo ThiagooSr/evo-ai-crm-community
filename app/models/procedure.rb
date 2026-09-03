@@ -1,3 +1,31 @@
+# == Schema Information
+#
+# Table name: procedures
+#
+#  id             :uuid             not null, primary key
+#  archived_at    :datetime
+#  category       :string
+#  content_blocks :jsonb            not null
+#  description    :text
+#  metadata       :jsonb            not null
+#  public_token   :string
+#  published_at   :datetime
+#  status         :integer          default("draft"), not null
+#  tags           :jsonb            not null
+#  title          :string           not null
+#  usage_mode     :integer          default("internal"), not null
+#  created_at     :datetime         not null
+#  updated_at     :datetime         not null
+#  created_by_id  :uuid
+#  updated_by_id  :uuid
+#
+# Indexes
+#
+#  index_procedures_on_category      (category)
+#  index_procedures_on_public_token  (public_token) UNIQUE WHERE (public_token IS NOT NULL)
+#  index_procedures_on_status        (status)
+#  index_procedures_on_usage_mode    (usage_mode)
+#
 class Procedure < ApplicationRecord
   has_many :procedure_visibilities, dependent: :destroy
   has_many :procedure_targets, dependent: :destroy

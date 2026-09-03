@@ -2,21 +2,21 @@
 #
 # Table name: working_hours
 #
-#  id               :uuid             not null, primary key
-#  close_hour       :integer
-#  close_hour_2     :integer
-#  close_minutes    :integer
-#  close_minutes_2  :integer
-#  closed_all_day   :boolean          default(FALSE)
-#  day_of_week      :integer          not null
-#  open_all_day     :boolean          default(FALSE)
-#  open_hour        :integer
-#  open_hour_2      :integer
-#  open_minutes     :integer
-#  open_minutes_2   :integer
-#  created_at       :datetime         not null
-#  updated_at       :datetime         not null
-#  inbox_id         :uuid
+#  id              :uuid             not null, primary key
+#  close_hour      :integer
+#  close_hour_2    :integer
+#  close_minutes   :integer
+#  close_minutes_2 :integer
+#  closed_all_day  :boolean          default(FALSE)
+#  day_of_week     :integer          not null
+#  open_all_day    :boolean          default(FALSE)
+#  open_hour       :integer
+#  open_hour_2     :integer
+#  open_minutes    :integer
+#  open_minutes_2  :integer
+#  created_at      :datetime         not null
+#  updated_at      :datetime         not null
+#  inbox_id        :uuid
 #
 # Indexes
 #
