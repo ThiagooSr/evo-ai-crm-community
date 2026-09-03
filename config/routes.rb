@@ -127,6 +127,9 @@ Rails.application.routes.draw do
           member do
             post :retry
           end
+          collection do
+            get :resolve
+          end
         end
         resources :assignments, only: [:create], controller: 'conversations/assignments'
         resources :labels, only: [:create, :index], controller: 'conversations/labels'
