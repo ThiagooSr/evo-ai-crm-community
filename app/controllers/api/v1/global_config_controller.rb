@@ -35,6 +35,12 @@ class Api::V1::GlobalConfigController < Api::BaseController
       enableAccountSignup: enable_account_signup?,
       recaptchaSiteKey: GlobalConfigService.load('RECAPTCHA_SITE_KEY', nil),
       clarityProjectId: GlobalConfigService.load('CLARITY_PROJECT_ID', nil),
+      # Installation branding — read before login (login screen, browser tab).
+      # Defaults preserve the stock Evo CRM look when nothing was configured.
+      brandName: GlobalConfigService.load('BRAND_NAME', 'Evo CRM'),
+      brandPrimaryColor: GlobalConfigService.load('BRAND_PRIMARY_COLOR', nil),
+      brandLogoUrl: GlobalConfigService.load('BRAND_LOGO_URL', nil),
+      brandFaviconUrl: GlobalConfigService.load('BRAND_FAVICON_URL', nil),
     }
   end
 

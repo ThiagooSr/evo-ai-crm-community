@@ -65,7 +65,13 @@ module Api
           ],
           'push_notifications' => %w[FIREBASE_PROJECT_ID FIREBASE_CREDENTIALS_SECRET
                                      IOS_APP_ID ANDROID_BUNDLE_ID],
-          'frontend_runtime' => %w[RECAPTCHA_SITE_KEY CLARITY_PROJECT_ID]
+          'frontend_runtime' => %w[RECAPTCHA_SITE_KEY CLARITY_PROJECT_ID],
+          # Installation-level branding (name, primary color, logo, favicon). Values
+          # here are public by design — GlobalConfigController#show exposes them to
+          # the unauthenticated login screen. BRAND_LOGO_URL / BRAND_FAVICON_URL hold
+          # an ActiveStorage blob URL (uploaded via POST /api/v1/upload) or an
+          # external URL, not the file itself.
+          'branding' => %w[BRAND_NAME BRAND_PRIMARY_COLOR BRAND_LOGO_URL BRAND_FAVICON_URL]
         }.freeze
 
         # Required-key enforcement: see `IntegrationRequirements` for the per-integration
