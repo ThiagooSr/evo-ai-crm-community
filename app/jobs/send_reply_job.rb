@@ -19,6 +19,8 @@ class SendReplyJob < ApplicationJob
     case channel_name
     when 'Channel::FacebookPage'
       send_on_facebook_page(message)
+    when 'Channel::Instagram'
+      send_on_instagram(message)
     else
       services[channel_name].new(message: message).perform if services[channel_name].present?
     end
@@ -59,6 +61,14 @@ class SendReplyJob < ApplicationJob
     else
       # For regular messenger conversations or Messenger direct messages
       ::Facebook::SendOnFacebookService.new(message: message).perform
+    end
+  end
+
+  def send_on_instagram(message)
+    if message.conversation.additional_attributes&.dig('conversation_type') == ::Instagram::CommentCreator::CONVERSATION_TYPE
+      ::Instagram::SendCommentReplyService.new(message: message).perform
+    else
+      ::Instagram::SendOnInstagramService.new(message: message).perform
     end
   end
 
