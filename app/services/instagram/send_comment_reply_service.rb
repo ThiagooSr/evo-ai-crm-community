@@ -43,8 +43,10 @@ class Instagram::SendCommentReplyService < Base::SendOnChannelService
       return parent.source_id if parent&.source_id.present?
     end
 
+    # Every incoming message of a comment conversation is a comment. Do not filter by
+    # content_attributes in SQL: the column holds a JSON *string*, so ->> returns NULL.
     conversation.messages.incoming
-                .where("content_attributes->>'instagram_comment' = 'true'")
+                .where.not(source_id: nil)
                 .order(created_at: :desc)
                 .pick(:source_id)
   end
