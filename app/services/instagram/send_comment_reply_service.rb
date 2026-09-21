@@ -45,9 +45,11 @@ class Instagram::SendCommentReplyService < Base::SendOnChannelService
 
     # Every incoming message of a comment conversation is a comment. Do not filter by
     # content_attributes in SQL: the column holds a JSON *string*, so ->> returns NULL.
+    # `reorder`: Message has `default_scope { order(created_at: :asc) }`, and a plain
+    # `order(desc)` would only be appended to it, returning the OLDEST comment.
     conversation.messages.incoming
                 .where.not(source_id: nil)
-                .order(created_at: :desc)
+                .reorder(created_at: :desc)
                 .pick(:source_id)
   end
 
