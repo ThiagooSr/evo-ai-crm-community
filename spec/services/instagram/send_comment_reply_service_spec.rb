@@ -45,6 +45,21 @@ RSpec.describe Instagram::SendCommentReplyService do
     expect(message.reload.source_id).to eq('reply-1')
   end
 
+  it 'replies to the LATEST comment when there are several (Message has an ascending default_scope)' do
+    Instagram::CommentCreator.new(
+      ig_account_id: ig_id,
+      value: { 'from' => { 'id' => '111', 'username' => 'cliente' }, 'id' => 'c2', 'text' => 'E o prazo?' }
+    ).perform
+    conversation.messages.find_by!(source_id: 'c2').update_columns(created_at: 1.minute.from_now) # rubocop:disable Rails/SkipsModelValidations
+
+    message = reply
+    expect(HTTParty).to receive(:post)
+      .with('https://graph.instagram.com/v23.0/c2/replies', anything)
+      .and_return(ok_response('id' => 'reply-2'))
+
+    described_class.new(message: message).perform
+  end
+
   it 'sends a private reply (DM) when requested' do
     message = reply('instagram_reply_mode' => 'private')
     expect(HTTParty).to receive(:post) do |url, options|
