@@ -18,7 +18,7 @@ class Instagram::SendCommentReplyService < Base::SendOnChannelService
   end
 
   def perform_reply
-    return if message.content.blank?
+    return if reply_text.blank?
 
     comment_id = target_comment_id
     raise StandardError, "Comment ID not found for reply message #{message.id}" if comment_id.blank?
@@ -28,6 +28,20 @@ class Instagram::SendCommentReplyService < Base::SendOnChannelService
   rescue StandardError => e
     Rails.logger.error("[Instagram::SendCommentReplyService] #{e.class}: #{e.message}")
     Messages::StatusUpdateService.new(message, 'failed', e.message.to_s.truncate(500)).perform
+  end
+
+  # The composer prepends the agent's signature ("<strong>Name:</strong> ") when the
+  # agent has it enabled. Public comment replies must not carry the agent's name.
+  def reply_text
+    strip_html_tags(remove_agent_signature(message.content.to_s)).strip
+  end
+
+  def remove_agent_signature(text)
+    signature = message.sender.try(:message_signature).to_s.strip
+    return text if signature.blank?
+
+    escaped = Regexp.escape(signature)
+    text.sub(%r{<strong>\s*#{escaped}\s*:</strong>\s*}i, '').sub(/\A\s*\*#{escaped}:\*\s*/, '')
   end
 
   def private_reply?
@@ -57,7 +71,7 @@ class Instagram::SendCommentReplyService < Base::SendOnChannelService
     HTTParty.post(
       "#{MetaBaseUrl.for(:instagram)}/#{comment_id}/replies",
       query: { access_token: channel.access_token },
-      body: { message: strip_html_tags(message.content) },
+      body: { message: reply_text },
       timeout: 30
     )
   end
@@ -69,7 +83,7 @@ class Instagram::SendCommentReplyService < Base::SendOnChannelService
       query: { access_token: channel.access_token },
       body: {
         recipient: { comment_id: comment_id },
-        message: { text: strip_html_tags(message.content) }
+        message: { text: reply_text }
       }.to_json,
       headers: { 'Content-Type' => 'application/json' },
       timeout: 30

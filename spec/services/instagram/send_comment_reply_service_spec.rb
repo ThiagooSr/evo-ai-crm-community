@@ -60,6 +60,18 @@ RSpec.describe Instagram::SendCommentReplyService do
     described_class.new(message: message).perform
   end
 
+  it "does not send the agent's signature in the reply" do
+    agent = instance_double(User, message_signature: 'Thiago')
+    message = reply
+    allow(message).to receive(:sender).and_return(agent)
+    message.content = '<p><strong>Thiago:</strong> R$ 50</p>'
+    expect(HTTParty).to receive(:post)
+      .with('https://graph.instagram.com/v23.0/c1/replies', hash_including(body: { message: 'R$ 50' }))
+      .and_return(ok_response('id' => 'reply-3'))
+
+    described_class.new(message: message).perform
+  end
+
   it 'sends a private reply (DM) when requested' do
     message = reply('instagram_reply_mode' => 'private')
     expect(HTTParty).to receive(:post) do |url, options|
