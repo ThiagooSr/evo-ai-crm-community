@@ -28,6 +28,7 @@ class ContactInboxWithContactBuilder
     # For Evolution Go, do a smart search first
     if evolution_go_channel?
       # Try to find existing ContactInbox or reuse one from the same contact
+      @source_id = normalized_evolution_go_source_id
       Rails.logger.info "Evolution Go: Smart contact/inbox lookup for source_id: #{source_id}"
       perform_evolution_go_lookup
       return @contact_inbox if @contact_inbox
@@ -47,9 +48,21 @@ class ContactInboxWithContactBuilder
 
   private
 
+  # A phone source_id is stored as digits only. Rows written before this rule may
+  # carry a "+" (e.g. "+5531..."), so the lookup accepts both forms. LIDs and
+  # group JIDs (anything with "@") are kept as they are.
+  def normalized_evolution_go_source_id
+    return source_id if source_id.blank? || source_id.include?('@')
+
+    source_id.to_s.delete('+').gsub(/\s/, '')
+  end
+
   def perform_evolution_go_lookup
     # First check if ContactInbox with this exact source_id already exists
-    @contact_inbox = inbox.contact_inboxes.find_by(source_id: source_id) if source_id.present?
+    if source_id.present?
+      variants = source_id.include?('@') ? [source_id] : [source_id, "+#{source_id}"]
+      @contact_inbox = inbox.contact_inboxes.find_by(source_id: variants)
+    end
     if @contact_inbox
       Rails.logger.info "Evolution Go: Found existing ContactInbox #{@contact_inbox.id} with exact source_id '#{source_id}'"
       @contact = @contact_inbox.contact

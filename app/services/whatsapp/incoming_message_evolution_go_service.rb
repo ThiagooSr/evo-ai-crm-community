@@ -57,6 +57,23 @@ class Whatsapp::IncomingMessageEvolutionGoService < Whatsapp::IncomingMessageBas
     base
   end
 
+  # Evolution Go can report one person under several identifiers (phone with or
+  # without "+", and LID). Each identifier maps to its own ContactInbox, and the
+  # base lookup is per ContactInbox, so every variant opened a new conversation.
+  # Here the lookup is per contact in this inbox: the open conversation of the
+  # same person is reused whichever identifier the message arrived with.
+  # Outbound replies compute their target from the contact (identifier/phone),
+  # so answering a conversation attached to another ContactInbox is safe.
+  def set_conversation
+    contact_conversations = ::Conversation.where(inbox_id: @inbox.id, contact_id: @contact_inbox.contact_id)
+    contact_conversations = contact_conversations.where.not(status: :resolved) unless @inbox.lock_to_single_conversation
+
+    @conversation = contact_conversations.order(:created_at).last
+    return if @conversation
+
+    @conversation = ::Conversation.find_or_create_by!(conversation_params)
+  end
+
   def incoming?
     # Evolution Go: Check IsFromMe field from Info
     from_me = @evolution_go_info&.dig(:IsFromMe)
